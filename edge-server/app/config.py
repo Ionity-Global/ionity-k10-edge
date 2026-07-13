@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "gemma4:e2b"   # local brain via Ollama (installed); fallback below gemma4:e4b
+    vision_model: str = "gemma3:4b"    # multimodal model for camera OCR/vision (reads text reliably)
 
     bridge_mode: str = "http"          # off | http  — primary brain = Claude via the web bridge
     bridge_url: str = "http://127.0.0.1:8799/ask"

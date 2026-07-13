@@ -31,7 +31,7 @@ from app.render import orb_render
 from app import logbuf
 
 # ---- user settings overlay (dashboard Settings panel) — persisted, applied at boot ----
-_TUNABLE = ("wake_word", "assistant_name", "ollama_model", "bridge_mode", "idle_sleep_s",
+_TUNABLE = ("wake_word", "assistant_name", "ollama_model", "vision_model", "bridge_mode", "idle_sleep_s",
             "ha_url", "ha_token", "hue_bridge", "chromecast_name", "mqtt_host", "mqtt_port",
             "dispatch_webhook_url", "image_api_url")
 _SETTINGS_PATH = Path(settings.data_dir) / "settings.json"
@@ -381,16 +381,15 @@ def logs():
 
 
 # ---------- Vision: camera image -> Gemma multimodal (OCR + description), OCR fallback ----------
-@app.post("/api/see")
-async def see(file: UploadFile = File(...), prompt: str = "Describe this image and read any text in it (OCR). Be concise."):
-    img = await file.read()
+def _vision(img: bytes, prompt: str) -> dict:
+    """Shared vision pipeline: Gemma multimodal via Ollama; classic OCR fallback.
+    Speaks the answer (device plays it via audio_seq) and adds it to the transcript."""
     logbuf.add("see", f"image {len(img)} bytes")
-    # 1) Gemma multimodal via Ollama (local, no cloud)
     try:
         import base64
         req = urllib.request.Request(
             settings.ollama_url.rstrip("/") + "/api/generate",
-            data=json.dumps({"model": settings.ollama_model, "prompt": prompt,
+            data=json.dumps({"model": settings.vision_model, "prompt": prompt,
                              "images": [base64.b64encode(img).decode()], "stream": False}).encode(),
             headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=120) as r:
@@ -406,12 +405,40 @@ async def see(file: UploadFile = File(...), prompt: str = "Describe this image a
                     "provenance": provenance.stamp("vision", {"len": len(img)})}
     except Exception as e:
         logbuf.add("see", f"gemma vision failed: {e}")
-    # 2) fallback: classic OCR + faces/QR
     with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
         tmp.write(img); path = tmp.name
     out = orc.analyze_image(path, want_ocr=True)
     txt = " ".join((out.get("ocr") or {}).get("lines", []))[:400] if isinstance(out.get("ocr"), dict) else ""
+    if txt:
+        assistant.last_reply = txt; assistant._speak(txt[:300]); assistant.set_state("speaking")
+        assistant.transcript.append({"role": "assistant", "text": "[ocr] " + txt[:300], "ts": time.time()})
     return {"ok": True, "backend": "ocr", "text": txt or "(no text found)", "detail": out}
+
+
+@app.post("/api/see")
+async def see(file: UploadFile = File(...), prompt: str = "Describe this image and read any text in it (OCR). Be concise."):
+    return _vision(await file.read(), prompt)
+
+
+@app.post("/api/see-raw565")
+async def see_raw565(request: Request, w: int = 320, h: int = 240):
+    """OCR MODE from the K10: raw big-endian RGB565 camera frame -> JPEG -> Gemma vision.
+    The spoken answer reaches the device automatically (audio_seq -> say.wav)."""
+    raw = await request.body()
+    try:
+        import numpy as _np
+        import io as _io
+        from PIL import Image as _Img
+        a = _np.frombuffer(raw[: w * h * 2], dtype=">u2").reshape(h, w)
+        r = ((a >> 11) & 0x1F) << 3; g = ((a >> 5) & 0x3F) << 2; b = (a & 0x1F) << 3
+        rgb = _np.dstack([r, g, b]).astype(_np.uint8)
+        buf = _io.BytesIO(); _Img.fromarray(rgb).save(buf, "JPEG", quality=88)
+        (Path(settings.data_dir) / "last_cam.jpg").write_bytes(buf.getvalue())
+        return _vision(buf.getvalue(), "You are looking through a home assistant's camera. "
+                                       "Read any text you can see (OCR) and briefly say what is in view.")
+    except Exception as e:
+        logbuf.add("see", f"raw565 decode failed: {e}")
+        return {"ok": False, "error": str(e)}
 
 
 # ---------- Smart-home control (Home Assistant / Hue / Cast / MQTT) ----------

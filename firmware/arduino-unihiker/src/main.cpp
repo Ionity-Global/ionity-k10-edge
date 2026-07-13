@@ -48,6 +48,11 @@ static char gHeard[120] = "";                     // last thing STT transcribed 
 static volatile uint32_t gAudioSeq = 0, gPlayedSeq = 0;   // server bumps audio_seq per new TTS clip
 static float gTemp = 0, gHum = 0; static uint16_t gAls = 0;
 static uint8_t* capBuf = nullptr;
+// ---- OCR MODE (Button A -> camera frame -> server Gemma vision) ----
+static QueueHandle_t camQueue = nullptr;
+static uint8_t* ocrBuf = nullptr;                 // one QVGA RGB565 frame (153600 B, PSRAM)
+static volatile bool gDoOCR = false, gOCRPending = false;
+static volatile int gCamW = 320, gCamH = 240;
 
 // transparent logos as LVGL image descriptors (alpha-blended by the canvas)
 static lv_img_dsc_t imgAI, imgION;
@@ -128,11 +133,26 @@ static void netAudioTask(void*) {
   const int CHUNKS=16;                                                    // ~1.6 s utterance
   const uint32_t dl = (uint32_t)CHUNK*CHUNKS;
   float micMax = 1500;
+  bool firstSync = true;
   for (;;) {
     if (WiFi.status()!=WL_CONNECTED || !capBuf) { vTaskDelay(pdMS_TO_TICKS(300)); continue; }
     syncWithServer();                                  // refresh orb colour/label/say (~every cycle)
-    // Speak EVERY new LLM reply through the ESP speaker (web chat, voice, dispatch — all of it)
-    if (gAudioSeq != gPlayedSeq) { playSay(); gPlayedSeq = gAudioSeq; }
+    if (firstSync) { gPlayedSeq = gAudioSeq; firstSync = false; }   // never replay old audio on boot
+    // Speak EVERY new LLM reply through the ESP speaker (web chat, voice, vision — all of it)
+    if (gAudioSeq != gPlayedSeq) {
+      playSay(); gPlayedSeq = gAudioSeq;
+      // ECHO MUTE: flush the mic so we don't transcribe our own voice tail
+      size_t rd; for (int i = 0; i < 12; i++) i2s_read(I2S_NUM_0, capBuf + 44, 4096, &rd, pdMS_TO_TICKS(80));
+    }
+    // OCR MODE: upload the captured camera frame instead of audio this cycle
+    if (gOCRPending && ocrBuf) {
+      HTTPClient http; http.begin(urlOf("/api/see-raw565?w=") + gCamW + "&h=" + gCamH);
+      http.addHeader("Content-Type", "application/octet-stream"); http.setTimeout(120000);
+      http.POST(ocrBuf, (size_t)gCamW * gCamH * 2);
+      http.end();
+      gOCRPending = false;
+      continue;                                        // answer arrives via audio_seq + say text
+    }
     size_t off=0, rd=0;
     for (int c=0;c<CHUNKS;c++){
       if (i2s_read(I2S_NUM_0, capBuf+44+off, CHUNK, &rd, pdMS_TO_TICKS(400))!=ESP_OK || rd==0) break;
@@ -165,6 +185,12 @@ void setup() {
   if (!capBuf) capBuf = (uint8_t*)malloc(44+160000);
   initLogos();                   // transparent IONITY + AI logo image descriptors
   digital_write(eAmp_Gain, 1);   // enable MIC input gain (needed for usable capture level)
+  // OCR MODE camera: frames flow into our queue; Button A grabs one for the server
+  ocrBuf = (uint8_t*)heap_caps_malloc(320 * 240 * 2, MALLOC_CAP_SPIRAM);
+  if (ocrBuf) {
+    camQueue = xQueueCreate(2, sizeof(camera_fb_t*));
+    if (camQueue) register_camera(PIXFORMAT_RGB565, FRAMESIZE_QVGA, 2, camQueue);
+  }
   bootBeep();                    // audible speaker self-test on power-up
   WiFi.mode(WIFI_STA); WiFi.begin(WIFI_SSID, WIFI_PASS);
   xTaskCreatePinnedToCore(netAudioTask, "net", 10240, nullptr, 1, nullptr, 0);
@@ -179,6 +205,19 @@ void loop() {
     gHum  = aht20.getData(AHT20::eAHT20HumiRH);
     gAls  = k10.readALS();
   }
+  // camera: keep frames flowing; Button A freezes the newest one for OCR MODE
+  camera_fb_t* fb = nullptr;
+  if (camQueue && xQueueReceive(camQueue, &fb, 0) == pdTRUE && fb) {
+    if (gDoOCR && ocrBuf && !gOCRPending) {
+      size_t n = fb->len < (size_t)(320*240*2) ? fb->len : (size_t)(320*240*2);
+      memcpy(ocrBuf, fb->buf, n);
+      gCamW = fb->width; gCamH = fb->height;
+      gOCRPending = true; gDoOCR = false;
+    }
+    esp_camera_fb_return(fb);
+  }
+  if (k10.buttonA && k10.buttonA->isPressed() && !gOCRPending) gDoOCR = true;
+
   float vl = gVoice; uint32_t orb = gOrb;
   static float ph = 0; ph += 0.22f; float breathe = 0.5f + 0.5f*sinf(ph);
   int r = (int)gRadius + (int)(vl*34) + (int)(breathe*6);           // pulse reacts to your voice
@@ -200,7 +239,8 @@ void loop() {
   int mw = (int)(vl*170); if(mw<1)mw=1;
   k10.canvas->canvasRectangle(52,234,mw,10,0x00D2FF,0x00D2FF,true);
   // what the server HEARD (proves mic -> WiFi -> STT)
-  snprintf(ln,sizeof(ln),"heard: %s", gHeard[0]?gHeard:"(say Peper...)"); k10.canvas->canvasText(ln,12,252,0x7FA6C9,k10.canvas->eCNAndENFont16,60,true);
+  if (gOCRPending) { k10.canvas->canvasText("OCR MODE: looking...",12,252,0xF7B731,k10.canvas->eCNAndENFont16,60,true); }
+  else { snprintf(ln,sizeof(ln),"heard: %s", gHeard[0]?gHeard:"(say Peper / [A]=OCR)"); k10.canvas->canvasText(ln,12,252,0x7FA6C9,k10.canvas->eCNAndENFont16,60,true); }
   // Claude's reply (spoken via the speaker)
   snprintf(ln,sizeof(ln),"%s",gSay[0]?gSay:""); k10.canvas->canvasText(ln,12,276,0xEAF6FF,k10.canvas->eCNAndENFont16,60,true);
   k10.canvas->canvasText("Policy 986 AED",12,304,0x2A4A5A,k10.canvas->eCNAndENFont16,40,true);

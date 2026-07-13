@@ -164,6 +164,15 @@ class Assistant:
         if not text:
             return {"ok": False, "note": "no speech", "transcript": ""}
 
+        # ECHO SUPPRESSION: the device mic hears its own speaker. If the transcript looks like
+        # what we just said (within ~14 s of speaking), drop it — otherwise the assistant
+        # answers itself in an infinite loop.
+        def _norm(s): return "".join(c for c in s.lower() if c.isalnum() or c == " ").split()
+        if self.last_reply and (time.time() - self.last_ts) < 14:
+            a, b = set(_norm(text)), set(_norm(self.last_reply))
+            if a and b and (len(a & b) / max(1, len(a))) > 0.6:
+                return {"ok": False, "ignored": True, "echo": True, "transcript": text}
+
         low = text.lower()
         # Whisper spells the wake word many ways — accept the near-homophones.
         variants = [settings.wake_word.lower(), "peper", "pepper", "pepe", "pepa", "peppa"]

@@ -292,11 +292,24 @@ document.getElementById('claudeToggle').onclick=async()=>{
   status();
 };
 
-/* text */
+/* text — render optimistically so it ALWAYS appears, independent of polling */
+function appendMsg(role,text){
+  const log=document.getElementById('log');if(!log)return;
+  const d=document.createElement('div');d.className='msg '+(role==='user'?'user':'ai');
+  d.innerHTML=`<div class="who">${role==='user'?'You':'Ionity'}</div>${esc(text)}`;
+  log.appendChild(d);log.scrollTop=log.scrollHeight;}
 document.getElementById('send').onclick=sendText;
 document.getElementById('text').addEventListener('keydown',e=>{if(e.key==='Enter')sendText();});
-async function sendText(){const el=document.getElementById('text'),t=el.value.trim();if(!t)return;el.value='';
-  await fetch(BASE+'/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});poll();}
+async function sendText(){
+  const el=document.getElementById('text'),t=el.value.trim();if(!t)return;el.value='';
+  appendMsg('user',t);                       // show my message immediately
+  try{
+    const r=await fetch(BASE+'/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});
+    const d=await r.json();
+    if(d && d.reply) appendMsg('ai',d.reply); // show the reply immediately too
+  }catch(e){ appendMsg('ai','(server not reachable — is the Edge Brain running?)'); }
+  poll();
+}
 
 /* push-to-talk */
 const micBtn=document.getElementById('mic');let rec=null,chunks=[],audioCtx=null,analyser=null,micStream=null,reacting=false;

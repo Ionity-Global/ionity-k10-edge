@@ -486,14 +486,16 @@ def manifest():
 @app.get("/api/sw.js")
 def service_worker():
     from fastapi.responses import Response
+    # Cache ONLY static brand assets under /web/ — NEVER the HTML or /api (avoids stale UI).
     sw = (
-        "const C='ionity-v1';"
+        "const C='ionity-v2';"
         "self.addEventListener('install',e=>{self.skipWaiting();});"
-        "self.addEventListener('activate',e=>{self.clients.claim();});"
+        "self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all("
+        "ks.filter(k=>k!==C).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});"
         "self.addEventListener('fetch',e=>{const u=new URL(e.request.url);"
-        "if(u.pathname==='/'||u.pathname.startsWith('/web/')){"
+        "if(u.pathname.startsWith('/web/')){"
         "e.respondWith(fetch(e.request).then(r=>{const c=r.clone();caches.open(C).then(x=>x.put(e.request,c));return r})"
-        ".catch(()=>caches.match(e.request)));}});"
+        ".catch(()=>caches.match(e.request)));}});"  # everything else (HTML, /api) = always network
     )
     return Response(content=sw, media_type="application/javascript")
 

@@ -13,6 +13,7 @@
 #include "esp_heap_caps.h"
 #include <math.h>
 #include "ai_glyph.h"           // AI logo -> big-endian RGB565 (LV_COLOR_16_SWAP=1)
+#include "ionity_glyph.h"       // IONITY wordmark -> big-endian RGB565
 
 #if __has_include("secrets.h")
   #include "secrets.h"
@@ -31,6 +32,7 @@
 #endif
 
 UNIHIKER_K10 k10;
+Music music;                    // vendor audio (proven speaker path)
 static const int SW = 240, SH = 320, CX = 120, CY = 128;
 static const uint32_t BG = 0x03080F;
 
@@ -63,8 +65,7 @@ static void playSay() {
     uint8_t hdr[44]; size_t hn = 0;
     while (hn < 44 && http.connected()) { int r = st->readBytes(hdr+hn, 44-hn); if (r<=0) break; hn+=r; }
     uint32_t clk = i2s_get_clk(I2S_NUM_0);
-    i2s_set_sample_rates(I2S_NUM_0, 16000);
-    digital_write(eAmp_Gain, 1);                 // <-- enable the speaker amplifier (was missing!)
+    i2s_set_sample_rates(I2S_NUM_0, 16000);      // same path the vendor playback uses
     int16_t mono[256], stereo[512]; size_t bw;
     while (http.connected()) {
       int r = st->readBytes((uint8_t*)mono, sizeof(mono)); if (r<=0) break;
@@ -72,26 +73,15 @@ static void playSay() {
       i2s_write(I2S_NUM_0, stereo, n*4, &bw, portMAX_DELAY);
     }
     i2s_zero_dma_buffer(I2S_NUM_0);
-    digital_write(eAmp_Gain, 0);
     i2s_set_sample_rates(I2S_NUM_0, clk);
   }
   http.end();
 }
 
-// Short startup chime — if you HEAR it, the speaker + amplifier work.
+// Startup chime via the VENDOR audio path — if you HEAR it, the speaker works (code-side).
 static void bootBeep() {
-  uint32_t clk = i2s_get_clk(I2S_NUM_0);
-  i2s_set_sample_rates(I2S_NUM_0, 16000);
-  digital_write(eAmp_Gain, 1);
-  int16_t buf[512]; size_t bw;
-  for (int rep = 0; rep < 10; rep++) {
-    int f = rep < 5 ? 660 : 880;
-    for (int i = 0; i < 256; i++) { int16_t s = (int16_t)(9000 * sinf(i * 2 * M_PI * f / 16000)); buf[2*i]=s; buf[2*i+1]=s; }
-    i2s_write(I2S_NUM_0, buf, sizeof(buf), &bw, portMAX_DELAY);
-  }
-  i2s_zero_dma_buffer(I2S_NUM_0);
-  digital_write(eAmp_Gain, 0);
-  i2s_set_sample_rates(I2S_NUM_0, clk);
+  music.playTone(784, 1600);
+  music.playTone(1046, 2200);
 }
 
 static void syncWithServer() {
@@ -166,11 +156,12 @@ void loop() {
   static float ph = 0; ph += 0.22f; float breathe = 0.5f + 0.5f*sinf(ph);
   int r = (int)gRadius + (int)(vl*34) + (int)(breathe*6);           // pulse reacts to your voice
   k10.canvas->canvasRectangle(0,0,SW,SH,BG,BG,true);
-  k10.canvas->canvasText("IONITY", 78, 8, 0x2E7DE1, k10.canvas->eCNAndENFont24, 40, true);
+  // IONITY logo (image) at the top
+  k10.canvas->canvasDrawBitmap(CX-ION_W/2, 6, ION_W, ION_H, ION_GLYPH);
   k10.canvas->canvasCircle(CX, CY, r+22, ((orb>>1)&0x7F7F7F), BG, false);
   k10.canvas->canvasCircle(CX, CY, r, orb, orb, true);
-  // AI logo image on a dark disc in the centre
-  int dr = r*0.62 > AI_W/2 ? (int)(r*0.62) : AI_W/2;
+  // transparent AI logo (image) on a dark disc in the orb centre
+  int dr = r*0.66 > AI_W/2 ? (int)(r*0.66) : AI_W/2;
   k10.canvas->canvasCircle(CX, CY, dr, BG, BG, true);
   k10.canvas->canvasDrawBitmap(CX-AI_W/2, CY-AI_H/2, AI_W, AI_H, AI_GLYPH);
   char ln[100];

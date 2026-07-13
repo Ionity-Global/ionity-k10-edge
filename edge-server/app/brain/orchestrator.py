@@ -21,7 +21,7 @@ class Orchestrator:
         self.cache = SemanticCache(settings.data_dir / "semantic_cache.json",
                                    settings.cache_threshold, settings.cache_max)
         self.stt = STT()
-        self.tts = TTS(settings.piper_voice or None)
+        self.tts = TTS(settings.tts_voice or settings.piper_voice or None)
         self.ocr = OCR()
         self.vision = Vision()
         self.mood = Mood()

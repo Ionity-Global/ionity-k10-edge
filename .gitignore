@@ -26,10 +26,12 @@ edge-server/data/
 edge-server/recordings/
 edge-server/cache/*.db
 
-# ---- Node / Installer ----
-installer/node_modules/
+# ---- Node / Installer / Bridge ----
+**/node_modules/
 installer/dist/
 installer/.vite/
+bridge/claude-web/.profile/
+bridge/**/playwright-report/
 
 # ---- OS / editors ----
 .DS_Store

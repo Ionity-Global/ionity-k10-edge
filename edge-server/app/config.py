@@ -21,11 +21,20 @@ class Settings(BaseSettings):
     cache_max: int = 5000
 
     ollama_url: str = "http://127.0.0.1:11434"
-    ollama_model: str = "gemma2"      # local LLM via Ollama: `ollama pull gemma2`
+    ollama_model: str = "gemma4:e2b"   # local brain via Ollama (installed); fallback below gemma4:e4b
 
-    bridge_mode: str = "off"           # off | http
+    bridge_mode: str = "http"          # off | http  — primary brain = Claude via the web bridge
     bridge_url: str = "http://127.0.0.1:8799/ask"
     bridge_min_confidence: float = 0.55
+
+    # ---- Voice home-assistant ----
+    assist_enabled: bool = True
+    wake_word: str = "ionity"          # spoken wake word (server-side keyword gate)
+    assistant_name: str = "Ionity"
+    orb_stream_fps: int = 10           # server->device orb frame rate
+    orb_frame_size: int = 150          # px square RGB565 region streamed to the K10
+    idle_sleep_s: float = 30.0         # go to SLEEPING after this much silence
+    tts_voice: str = ""                # path to a Piper .onnx voice (else browser/edge TTS)
 
     # Optional local integrations (all off by default — LOCAL SAVED, no cloud):
     dispatch_webhook_url: str = ""     # e.g. a Home Assistant webhook; /api/dispatch forwards commands here

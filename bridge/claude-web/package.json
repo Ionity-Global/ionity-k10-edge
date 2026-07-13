@@ -1,0 +1,14 @@
+{
+  "name": "ionity-claude-web-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Relays Edge Brain prompts to claude.ai via YOUR Google login (no API key). Policy 986 AED.",
+  "scripts": {
+    "start": "node server.js",
+    "postinstall": "playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "^1.61.0"
+  }
+}

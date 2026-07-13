@@ -26,6 +26,8 @@ from app.ads.ad_engine import AdEngine
 from app.telemetry.sensors import Telemetry
 from app.meta import provenance
 from app import orb as orbcfg
+from app.voice.assistant import Assistant
+from app.render import orb_render
 
 app = FastAPI(title="IonityEdge · K10 — Edge Brain", version=__version__)
 app.add_middleware(
@@ -38,6 +40,7 @@ recorder = Recorder()
 geolocator = Geolocator()
 ads = AdEngine()
 gateway = DeviceGateway(orc, recorder, geolocator, telemetry, ads)
+assistant = Assistant(orc, orc.mood)   # voice home-assistant: state machine + turns + tone
 
 # Latest Claude/brain reply — shown on the K10 "readback" segment + spoken by the dashboard (TTS).
 _LAST_SAY = {"text": "", "ts": 0.0}
@@ -118,8 +121,20 @@ def ingest(body: dict = Body(...)):
         except Exception:
             pass
     state = orbcfg.compute(did, tel)
-    if _LAST_SAY["text"] and (time.time() - _LAST_SAY["ts"] < 25):
-        state["say"] = _LAST_SAY["text"][:96]   # streamed to the K10 readback segment
+    # Merge the voice-assistant so the node reflects the AI: lights follow the AI's STATE + TONE,
+    # and Claude's words show on the device readback. Ambient sound-orb when the AI is idle/asleep.
+    assistant.tick()
+    a = assistant.snapshot()
+    if a["state"] in ("listening", "thinking", "speaking"):
+        c = a["color"]
+        state["color"] = c
+        state["label"] = a["state"].upper()
+        state["leds"] = [orbcfg._dark(c, 0.9), orbcfg._dark(c, 0.6), orbcfg._dark(c, 0.35)]
+    state["ai_state"] = a["state"]
+    if a.get("reply"):
+        state["say"] = a["reply"][:96]           # Claude's words on the device
+    elif _LAST_SAY["text"] and (time.time() - _LAST_SAY["ts"] < 25):
+        state["say"] = _LAST_SAY["text"][:96]
     telemetry.set_state(did, state)
     return {"ok": True, "state": state}
 
@@ -179,16 +194,61 @@ def chat(body: dict = Body(...)):
     text = ((body or {}).get("text") or "").strip()
     if not text:
         return {"reply": "", "source": "none"}
-    res = orc.ask(text)
-    reply = res.get("text", "")
+    turn = assistant.handle_text(text)          # drives state machine + tone + TTS
+    reply = turn.get("reply", "")
     _LAST_SAY["text"] = reply
     _LAST_SAY["ts"] = time.time()
-    return {"reply": reply, "source": res.get("source"), "mood": res.get("mood")}
+    return {"reply": reply, "source": turn.get("source"), "tone": turn.get("tone"),
+            "state": turn.get("state"), "audio": turn.get("audio")}
+
+
+# ---------- Voice home-assistant: utterance in (WAV), reply + state + tone out ----------
+@app.post("/api/voice")
+async def voice(file: UploadFile = File(...)):
+    """Dashboard/device push-to-talk: upload an utterance WAV -> STT -> brain -> reply(+TTS)."""
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+        tmp.write(await file.read())
+        path = tmp.name
+    turn = assistant.handle_wav(path)
+    if turn.get("reply"):
+        _LAST_SAY["text"] = turn["reply"]; _LAST_SAY["ts"] = time.time()
+    return turn
+
+
+@app.get("/api/assistant")
+def assistant_state():
+    assistant.tick()                    # relax state over time (speaking->idle->sleeping)
+    return assistant.snapshot()
+
+
+@app.post("/api/level")
+def set_level(body: dict = Body(...)):
+    assistant.set_level((body or {}).get("level", 0))
+    return {"ok": True, "level": assistant.level, "state": assistant.state}
 
 
 @app.get("/api/say")
 def say_get():
     return {"text": _LAST_SAY["text"], "ts": _LAST_SAY["ts"]}
+
+
+@app.get("/api/say.wav")
+def say_wav():
+    p = assistant.last_audio
+    if p and Path(p).exists():
+        return FileResponse(p, media_type="audio/wav", filename="ionity-say.wav")
+    return JSONResponse({"available": False, "note": "no server TTS audio (set TTS_VOICE / PIPER_VOICE)"},
+                        status_code=404)
+
+
+# ---------- Server-rendered orb frame (preview / device stream source) ----------
+@app.get("/api/orb-frame.png")
+def orb_frame(size: int = 240):
+    s = assistant.snapshot()
+    phase = (time.time() * 3.0) % (2 * 3.14159)
+    png = orb_render.png_bytes(size, s["color"], s["level"], phase, s["state"])
+    from fastapi.responses import Response
+    return Response(content=png, media_type="image/png")
 
 
 # ---------- Dispatch / home-assistance hook ----------

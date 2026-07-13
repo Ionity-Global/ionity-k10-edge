@@ -13,10 +13,14 @@ class STT:
     def __init__(self, model_size: str = "base") -> None:
         self.model = None
         if _HAVE:
-            try:
-                self.model = WhisperModel(model_size, device="auto", compute_type="int8")
-            except Exception:
-                self.model = None
+            # Prefer CPU int8 — robust everywhere (GPU path needs CUDA cuBLAS DLLs that
+            # aren't always present on Windows and crash at encode time).
+            for dev, ct in (("cpu", "int8"), ("auto", "int8")):
+                try:
+                    self.model = WhisperModel(model_size, device=dev, compute_type=ct)
+                    break
+                except Exception:
+                    self.model = None
 
     @property
     def available(self) -> bool:

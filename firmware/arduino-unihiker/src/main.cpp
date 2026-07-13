@@ -40,6 +40,7 @@ static volatile uint32_t gLeds[3] = {0, 0, 0};
 static volatile float gVoice = 0;                 // LIVE mic level 0..1 -> orb reactivity
 static volatile int gRadius = 40; static volatile uint8_t gBright = 6;
 static char gLabel[16] = "IDLE"; static char gSay[120] = "";
+static char gHeard[120] = "";                     // last thing STT transcribed (mic proof)
 static uint8_t* capBuf = nullptr;
 
 static uint32_t hex2u32(const char* s) { return s ? (uint32_t)strtol(s, nullptr, 16) : 0; }
@@ -75,6 +76,22 @@ static void playSay() {
     i2s_set_sample_rates(I2S_NUM_0, clk);
   }
   http.end();
+}
+
+// Short startup chime — if you HEAR it, the speaker + amplifier work.
+static void bootBeep() {
+  uint32_t clk = i2s_get_clk(I2S_NUM_0);
+  i2s_set_sample_rates(I2S_NUM_0, 16000);
+  digital_write(eAmp_Gain, 1);
+  int16_t buf[512]; size_t bw;
+  for (int rep = 0; rep < 10; rep++) {
+    int f = rep < 5 ? 660 : 880;
+    for (int i = 0; i < 256; i++) { int16_t s = (int16_t)(9000 * sinf(i * 2 * M_PI * f / 16000)); buf[2*i]=s; buf[2*i+1]=s; }
+    i2s_write(I2S_NUM_0, buf, sizeof(buf), &bw, portMAX_DELAY);
+  }
+  i2s_zero_dma_buffer(I2S_NUM_0);
+  digital_write(eAmp_Gain, 0);
+  i2s_set_sample_rates(I2S_NUM_0, clk);
 }
 
 static void syncWithServer() {
@@ -123,7 +140,8 @@ static void netAudioTask(void*) {
     http.addHeader("Content-Type","audio/wav"); http.setTimeout(30000);
     int code=http.POST(capBuf, 44+off); bool speak=false;
     if (code==200){ JsonDocument d; if(!deserializeJson(d,http.getString())){
-      bool ig=d["ignored"]|false; const char* rp=d["reply"]|""; if(!ig&&strlen(rp)>0) speak=true; } }
+      bool ig=d["ignored"]|false; const char* rp=d["reply"]|""; if(!ig&&strlen(rp)>0) speak=true;
+      const char* tr=d["transcript"]|""; if(strlen(tr)>0){ strncpy(gHeard,tr,sizeof(gHeard)-1); gHeard[sizeof(gHeard)-1]=0; } } }
     http.end();
     gVoice = 0;
     if (speak) playSay();
@@ -137,6 +155,7 @@ void setup() {
   k10.rgb->brightness(6); k10.rgb->write(-1, 0x1E7BFF);
   capBuf = (uint8_t*)heap_caps_malloc(44+160000, MALLOC_CAP_SPIRAM);
   if (!capBuf) capBuf = (uint8_t*)malloc(44+160000);
+  bootBeep();                    // audible speaker self-test on power-up
   WiFi.mode(WIFI_STA); WiFi.begin(WIFI_SSID, WIFI_PASS);
   xTaskCreatePinnedToCore(netAudioTask, "net", 10240, nullptr, 1, nullptr, 0);
 }
@@ -154,11 +173,21 @@ void loop() {
   int dr = r*0.62 > AI_W/2 ? (int)(r*0.62) : AI_W/2;
   k10.canvas->canvasCircle(CX, CY, dr, BG, BG, true);
   k10.canvas->canvasDrawBitmap(CX-AI_W/2, CY-AI_H/2, AI_W, AI_H, AI_GLYPH);
-  char ln[80];
-  snprintf(ln,sizeof(ln),"%s",gLabel); k10.canvas->canvasText(ln,12,216,orb,k10.canvas->eCNAndENFont16,40,true);
-  k10.canvas->canvasText("say: Peper ...",12,238,0x7FA6C9,k10.canvas->eCNAndENFont16,40,true);
-  snprintf(ln,sizeof(ln),"%s",gSay[0]?gSay:""); k10.canvas->canvasText(ln,12,264,0xEAF6FF,k10.canvas->eCNAndENFont16,60,true);
-  k10.canvas->canvasText("Policy 986 AED",12,302,0x2A4A5A,k10.canvas->eCNAndENFont16,40,true);
+  char ln[100];
+  // status + WiFi dot
+  bool wifi = WiFi.status() == WL_CONNECTED;
+  k10.canvas->canvasCircle(224, 12, 5, wifi ? 0x26DE81 : 0xE23B4E, wifi ? 0x26DE81 : 0xE23B4E, true);
+  snprintf(ln,sizeof(ln),"%s",gLabel); k10.canvas->canvasText(ln,12,210,orb,k10.canvas->eCNAndENFont16,40,true);
+  // LIVE mic meter — moves when you talk (proves the mic is capturing)
+  k10.canvas->canvasText("MIC",12,232,0x7FA6C9,k10.canvas->eCNAndENFont16,40,true);
+  k10.canvas->canvasRectangle(52,234,170,10,0x0C1826,0x0C1826,true);
+  int mw = (int)(vl*170); if(mw<1)mw=1;
+  k10.canvas->canvasRectangle(52,234,mw,10,0x00D2FF,0x00D2FF,true);
+  // what the server HEARD (proves mic -> WiFi -> STT)
+  snprintf(ln,sizeof(ln),"heard: %s", gHeard[0]?gHeard:"(say Peper...)"); k10.canvas->canvasText(ln,12,252,0x7FA6C9,k10.canvas->eCNAndENFont16,60,true);
+  // Claude's reply (spoken via the speaker)
+  snprintf(ln,sizeof(ln),"%s",gSay[0]?gSay:""); k10.canvas->canvasText(ln,12,276,0xEAF6FF,k10.canvas->eCNAndENFont16,60,true);
+  k10.canvas->canvasText("Policy 986 AED",12,304,0x2A4A5A,k10.canvas->eCNAndENFont16,40,true);
   k10.canvas->updateCanvas();
   // LEDs follow the server colour, brightness reacts to your voice
   k10.rgb->brightness((uint8_t)(3 + vl*6));

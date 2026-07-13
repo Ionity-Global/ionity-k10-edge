@@ -131,15 +131,20 @@ def render_screen(color: str, level: float, phase: float, state: str,
         d.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], outline=(R, G, B), width=2)
     d.ellipse([cx - core, cy - core, cx + core, cy + core], fill=(R, G, B))
 
-    # AI glyph masked into the orb centre
+    # AI logo fitted into the orb centre, on a dark disc for contrast on any orb colour
     glyph = _asset("ai-glyph.png")
     if glyph is not None:
-        gd_ = int(core * 1.15)
-        disc = _circular(glyph, max(24, gd_))
-        img.paste(disc, (int(cx - gd_ / 2), int(cy - gd_ / 2)), disc)
-    # specular
-    d.ellipse([cx - core * 0.4, cy - core * 0.42, cx - core * 0.4 + core * 0.34, cy - core * 0.42 + core * 0.34], fill=(255, 255, 255, 0))
-    ImageDraw.Draw(img).ellipse([cx - core * 0.42, cy - core * 0.44, cx - core * 0.18, cy - core * 0.20], fill=(255, 255, 255))
+        dr = core * 0.92
+        disc = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(disc).ellipse([cx - dr, cy - dr, cx + dr, cy + dr], fill=(4, 10, 18, 205))
+        img = Image.alpha_composite(img.convert("RGBA"), disc).convert("RGB")
+        gw = int(core * 1.45); gh = int(glyph.height * gw / max(1, glyph.width))
+        if gh > core * 1.05:
+            gh = int(core * 1.05); gw = int(glyph.width * gh / max(1, glyph.height))
+        g2 = glyph.resize((max(8, gw), max(8, gh)), Image.LANCZOS)
+        rgba = img.convert("RGBA"); rgba.paste(g2, (int(cx - gw / 2), int(cy - gh / 2)), g2)
+        img = rgba.convert("RGB")
+    d = ImageDraw.Draw(img)
 
     # IONITY wordmark (top)
     wm = _asset("ionity-wordmark-blue.png") or _asset("ionity-wordmark.png")
@@ -154,13 +159,25 @@ def render_screen(color: str, level: float, phase: float, state: str,
         f = _font(16); tw = dd.textlength(lab, font=f)
         dd.text(((W - tw) / 2, cy + core + 16), lab, fill=(int(R), int(G), int(B)), font=f)
 
-    # Claude reply text (bottom)
+    # Claude reply text (bottom) — or a live clock when idle (a server-side always-on feature)
     if reply:
         f = _font(15)
         lines = _wrap(dd, reply, f, W - 24)[:4]
         y = 236
         for ln in lines:
             dd.text((12, y), ln, fill=(234, 246, 255), font=f); y += 19
+    elif state in ("idle", "sleeping"):
+        try:
+            from datetime import datetime, timezone, timedelta
+            now = datetime.now(timezone(timedelta(hours=2)))   # SAST
+            clock = now.strftime("%H:%M"); dt = now.strftime("%a %d %b")
+        except Exception:
+            clock, dt = "", ""
+        if clock:
+            f = _font(40); tw = dd.textlength(clock, font=f)
+            dd.text(((W - tw) / 2, 232), clock, fill=(120, 166, 201), font=f)
+            f2 = _font(14); tw2 = dd.textlength(dt, font=f2)
+            dd.text(((W - tw2) / 2, 278), dt, fill=(70, 100, 120), font=f2)
     # footer
     dd.text((12, H - 16), "Policy 986 AED", fill=(70, 100, 120), font=_font(11))
     return img

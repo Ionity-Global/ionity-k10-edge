@@ -11,7 +11,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, UploadFile, File, Body
+from fastapi import FastAPI, WebSocket, UploadFile, File, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -208,6 +208,20 @@ async def voice(file: UploadFile = File(...)):
     """Dashboard/device push-to-talk: upload an utterance WAV -> STT -> brain -> reply(+TTS)."""
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
         tmp.write(await file.read())
+        path = tmp.name
+    turn = assistant.handle_wav(path)
+    if turn.get("reply"):
+        _LAST_SAY["text"] = turn["reply"]; _LAST_SAY["ts"] = time.time()
+    return turn
+
+
+@app.post("/api/voice-raw")
+async def voice_raw(request: Request):
+    """Raw WAV body from the K10 (I2S capture) -> STT -> brain -> reply(+TTS).
+    The device shows the reply via its next /ingest poll (state.say + tone colour)."""
+    data = await request.body()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+        tmp.write(data)
         path = tmp.name
     turn = assistant.handle_wav(path)
     if turn.get("reply"):

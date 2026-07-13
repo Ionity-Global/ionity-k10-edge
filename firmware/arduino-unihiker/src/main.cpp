@@ -1,10 +1,12 @@
-// IonityEdge · K10 — SENSORY FRONTEND NODE v7 (DFRobot UNIHIKER core)
-// The node uploads raw sensor data; the SERVER (Edge Brain) computes the mood, colour,
-// LED states, LED brightness and frame rate and returns them in the /ingest response.
-// The device simply DISPLAYS the server's render — everything is live and centrally
-// tunable at localhost with NO reflash. Also hosts its own tiny web server
-// (http://<device-ip>/) mirroring the same server-driven state, and periodically
-// uploads a WiFi scan (aps) so the Edge Brain can geolocate the moving device.
+// IonityEdge · K10 — VOICE HOME-ASSISTANT NODE v8 (DFRobot UNIHIKER core)
+// The node is a far-field mic + display. The SERVER (Edge Brain) is the brain:
+//   - The node UPLOADS sensors (/ingest) and DISPLAYS the server's render — the orb
+//     colour/LEDs follow the AI's STATE + TONE, and Claude's words show on-screen.
+//   - Press BUTTON A to talk: the node captures ~3 s of 16 kHz PCM from the mic (I2S,
+//     already initialised by the BSP — no SD card) and POSTs it to /api/voice-raw.
+//     The server does STT -> Claude (Google login, no API key) / gemma4:e2b -> reply,
+//     and the reply appears on the next /ingest poll (text + tone colour).
+// Everything else is centrally tunable at localhost with no reflash.
 // © Ionity (Pty) Ltd · Policy 986 AED · CC BY-SA 4.0
 #include "unihiker_k10.h"
 #include <WiFi.h>
@@ -12,6 +14,8 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <math.h>
+#include "driver/i2s.h"
+#include "esp_heap_caps.h"
 
 #if __has_include("secrets.h")
   #include "secrets.h"
@@ -28,14 +32,6 @@
 #ifndef EDGE_PORT
 #define EDGE_PORT 8765
 #endif
-// Extra K10 hardware is OFF by default so the build never breaks on a BSP that
-// lacks the API. Flip to 1 once you've confirmed the method names for your library.
-#ifndef USE_K10_BUTTONS
-#define USE_K10_BUTTONS 0
-#endif
-#ifndef USE_K10_ACCEL
-#define USE_K10_ACCEL 0
-#endif
 
 UNIHIKER_K10 k10;
 AHT20 aht20;
@@ -47,43 +43,75 @@ static const uint32_t BG = 0x03080F;
 // ---- server-computed render (device just displays these) ----
 static uint32_t gOrb = 0x1E7BFF, gLeds[3] = {0, 0, 0};
 static float gLevel = 0; static int gRadius = 40; static char gLabel[16] = "CALM";
-static uint8_t gBright = 6;      // LED brightness from the server (0..9), live-tunable
-static uint32_t gFps = 35;       // frame delay in ms from the server, live-tunable
-static char gSay[120] = "";      // Claude / brain reply, streamed from the server (readback)
+static uint8_t gBright = 6; static uint32_t gFps = 35;
+static char gSay[120] = "";
 // ---- local sensor state (uploaded to the server) ----
 static float gTemp = 0, gHum = 0, micMax = 2000, level = 0, levelSmooth = 0, phase = 0;
 static uint16_t gAls = 0; static uint32_t gSound = 0;
-static uint32_t lastPost = 0; static bool webUp = false;
-// ---- WiFi scan (feeds server geolocation) ----
-static String gAps = "";                 // JSON array of {bssid,rssi}, most-recent scan
-static uint32_t lastScan = 0; static bool scanRunning = false;
+static uint32_t lastPost = 0; static bool webUp = false; static bool lastBtn = false;
+static String gAps = ""; static uint32_t lastScan = 0; static bool scanRunning = false;
 
 static uint32_t hex2u32(const char* s) { return s ? (uint32_t)strtol(s, nullptr, 16) : 0; }
 
-// Non-blocking WiFi scan: kick off async, harvest when done, keep the top-6 APs.
+// ---- WAV header (44 bytes, PCM) ----
+static void wavHeader(uint8_t* h, uint32_t dataLen, uint32_t sr, uint16_t ch, uint16_t bps) {
+  uint32_t byteRate = sr * ch * bps / 8; uint16_t blockAlign = ch * bps / 8; uint32_t chunk = 36 + dataLen;
+  memcpy(h, "RIFF", 4);   h[4]=chunk; h[5]=chunk>>8; h[6]=chunk>>16; h[7]=chunk>>24;
+  memcpy(h+8, "WAVE", 4); memcpy(h+12, "fmt ", 4);
+  h[16]=16; h[17]=0; h[18]=0; h[19]=0;  h[20]=1; h[21]=0;  h[22]=ch; h[23]=0;
+  h[24]=sr; h[25]=sr>>8; h[26]=sr>>16; h[27]=sr>>24;
+  h[28]=byteRate; h[29]=byteRate>>8; h[30]=byteRate>>16; h[31]=byteRate>>24;
+  h[32]=blockAlign; h[33]=0;  h[34]=bps; h[35]=0;
+  memcpy(h+36, "data", 4); h[40]=dataLen; h[41]=dataLen>>8; h[42]=dataLen>>16; h[43]=dataLen>>24;
+}
+
+// ---- push-to-talk: capture ~3s from the mic (I2S, already running) -> POST /api/voice-raw ----
+static void captureAndSend() {
+  const uint32_t SR = 16000; const uint16_t CH = 2, BPS = 16; const uint32_t SECS = 3;
+  const uint32_t dataLen = SR * CH * (BPS / 8) * SECS;   // 192000 bytes
+  uint8_t* buf = (uint8_t*)heap_caps_malloc(44 + dataLen, MALLOC_CAP_SPIRAM);
+  if (!buf) buf = (uint8_t*)malloc(44 + dataLen);
+  if (!buf) return;                                      // out of memory — bail, display unaffected
+  wavHeader(buf, dataLen, SR, CH, BPS);
+
+  k10.canvas->canvasRectangle(0, 0, SW, SH, BG, BG, true);
+  k10.canvas->canvasText("LISTENING", 12, 130, 0x00D2FF, k10.canvas->eCNAndENFont24, 40, true);
+  k10.canvas->canvasText("talk now...", 12, 164, 0x7FA6C9, k10.canvas->eCNAndENFont16, 40, true);
+  k10.canvas->updateCanvas();
+
+  size_t got = 0, rd = 0;
+  while (got < dataLen) {
+    esp_err_t e = i2s_read(I2S_NUM_0, buf + 44 + got,
+                           (dataLen - got > 4096 ? 4096 : dataLen - got), &rd, pdMS_TO_TICKS(1000));
+    if (e != ESP_OK || rd == 0) break;
+    got += rd;
+  }
+
+  k10.canvas->canvasText("thinking...", 12, 196, 0xB06CF0, k10.canvas->eCNAndENFont16, 40, true);
+  k10.canvas->updateCanvas();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(String("http://") + EDGE_HOST + ":" + EDGE_PORT + "/api/voice-raw");
+    http.addHeader("Content-Type", "audio/wav");
+    http.setTimeout(25000);
+    http.POST(buf, 44 + got);
+    http.end();
+  }
+  free(buf);
+  lastPost = 0;   // force an immediate /ingest so the reply shows fast
+}
+
 static void maybeScan(uint32_t now) {
   if (WiFi.status() != WL_CONNECTED) return;
-  if (!scanRunning && (lastScan == 0 || now - lastScan > 60000)) {
-    WiFi.scanNetworks(/*async=*/true, /*show_hidden=*/false);
-    scanRunning = true;
-    return;
-  }
+  if (!scanRunning && (lastScan == 0 || now - lastScan > 60000)) { WiFi.scanNetworks(true, false); scanRunning = true; return; }
   if (scanRunning) {
     int n = WiFi.scanComplete();
     if (n >= 0) {
-      String s = "[";
-      int lim = n < 6 ? n : 6;
-      for (int i = 0; i < lim; i++) {
-        if (i) s += ",";
-        s += "{\"bssid\":\"" + WiFi.BSSIDstr(i) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
-      }
-      s += "]";
-      gAps = s;
-      WiFi.scanDelete();
-      scanRunning = false; lastScan = now;
-    } else if (n == WIFI_SCAN_FAILED) {
-      scanRunning = false; lastScan = now;
-    }
+      String s = "["; int lim = n < 6 ? n : 6;
+      for (int i = 0; i < lim; i++) { if (i) s += ","; s += "{\"bssid\":\"" + WiFi.BSSIDstr(i) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}"; }
+      s += "]"; gAps = s; WiFi.scanDelete(); scanRunning = false; lastScan = now;
+    } else if (n == WIFI_SCAN_FAILED) { scanRunning = false; lastScan = now; }
   }
 }
 
@@ -92,8 +120,7 @@ static String liveJson() {
   snprintf(b, sizeof(b),
     "{\"device\":\"ionity-k10\",\"ip\":\"%s\",\"temp_c\":%.1f,\"humidity\":%.0f,\"light\":%u,"
     "\"level\":%.3f,\"mood_label\":\"%s\",\"color\":\"%06X\",\"brightness\":%u,\"rssi\":%d}",
-    WiFi.localIP().toString().c_str(), gTemp, gHum, gAls, gLevel, gLabel,
-    gOrb & 0xFFFFFF, gBright, WiFi.RSSI());
+    WiFi.localIP().toString().c_str(), gTemp, gHum, gAls, gLevel, gLabel, gOrb & 0xFFFFFF, gBright, WiFi.RSSI());
   return String(b);
 }
 static void handleLive() { web.send(200, "application/json", liveJson()); }
@@ -102,7 +129,7 @@ static void handleRoot() {
     "<title>IonityEdge K10</title><style>body{margin:0;background:#03080f;color:#eaf6ff;font-family:system-ui;text-align:center}"
     ".orb{width:150px;height:150px;border-radius:50%;margin:26px auto;transition:.4s}h1{color:#00d2ff;letter-spacing:1px}.k{color:#7fa6c9}</style>"
     "</head><body><h1>IONITY &middot; ORB</h1><div id=o class=orb></div><div id=t></div>"
-    "<p class=k>on-device node &middot; colour computed by the Edge Brain &middot; Policy 986 AED</p>"
+    "<p class=k>voice node &middot; press A to talk &middot; colour from the Edge Brain &middot; Policy 986 AED</p>"
     "<script>async function u(){let d=await (await fetch('/live')).json();let o=document.getElementById('o');"
     "let s=80+d.level*130;o.style.width=o.style.height=s+'px';let c='#'+d.color;o.style.background=c;o.style.boxShadow='0 0 44px '+c;"
     "document.getElementById('t').innerHTML='MOOD '+d.mood_label+'<br>Temp '+d.temp_c+'C &middot; Light '+d.light+' &middot; Sound '+Math.round(d.level*100)+'%';}"
@@ -110,7 +137,6 @@ static void handleRoot() {
   web.send(200, "text/html", h);
 }
 
-// upload sensors (+ optional WiFi scan), receive the server's render
 static void syncWithServer() {
   HTTPClient http;
   http.begin(String("http://") + EDGE_HOST + ":" + EDGE_PORT + "/ingest");
@@ -153,6 +179,12 @@ void loop() {
   uint32_t now = millis();
   if (webUp) web.handleClient();
 
+  // push-to-talk on Button A (edge-triggered)
+  bool btn = false;
+  if (k10.buttonA) btn = k10.buttonA->isPressed();
+  if (btn && !lastBtn) captureAndSend();
+  lastBtn = btn;
+
   // sensory frontend: read + compute upload level (NOT colour)
   uint64_t mic = k10.readMICData();
   gTemp = aht20.getData(AHT20::eAHT20TempC);
@@ -162,16 +194,7 @@ void loop() {
   float m = (float)mic; micMax = micMax * 0.992f; if (m > micMax) micMax = m; if (micMax < 1200) micMax = 1200;
   level = m / micMax; if (level > 1) level = 1; levelSmooth = levelSmooth * 0.65f + level * 0.35f;
 
-#if USE_K10_BUTTONS
-  // Best-effort: forward a button press as a dispatch hint (enable once API confirmed).
-  // if (k10.buttonA->isPressed()) { /* POST /api/dispatch {command:"read"} */ }
-#endif
-#if USE_K10_ACCEL
-  // Best-effort: read accelerometer into telemetry (enable once API confirmed).
-  // float ax = k10.getAccelerometerX(); ...
-#endif
-
-  // display the SERVER's render
+  // display the SERVER's render (orb colour/LEDs follow the AI state + tone)
   phase += 0.16f; float breathe = 0.5f + 0.5f * sinf(phase);
   int r = gRadius + (int)(breathe * 7);
   k10.canvas->canvasRectangle(0, 0, SW, SH, BG, BG, true);
@@ -182,23 +205,17 @@ void loop() {
   char ln[80];
   snprintf(ln, sizeof(ln), "MOOD  %s", gLabel); k10.canvas->canvasText(ln, 12, 230, gOrb, k10.canvas->eCNAndENFont16, 40, true);
   snprintf(ln, sizeof(ln), "TEMP %.1fC  LIGHT %u", gTemp, gAls); k10.canvas->canvasText(ln, 12, 252, 0x7FA6C9, k10.canvas->eCNAndENFont16, 40, true);
-  int bars = (int)(gLevel * 18); char snd[26] = "SOUND "; for (int i = 0; i < 18; i++) snd[6 + i] = i < bars ? '|' : '.'; snd[24] = 0;
-  k10.canvas->canvasText(snd, 12, 274, gOrb, k10.canvas->eCNAndENFont16, 30, true);
-  // Claude readback segment (server streams the reply here)
+  k10.canvas->canvasText("[A] talk to Ionity", 12, 274, 0x00D2FF, k10.canvas->eCNAndENFont16, 40, true);
   snprintf(ln, sizeof(ln), "CLAUDE: %s", gSay[0] ? gSay : "-");
   k10.canvas->canvasText(ln, 12, 298, 0x00D2FF, k10.canvas->eCNAndENFont16, 60, true);
   k10.canvas->updateCanvas();
 
-  // LEDs from the server's render (brightness is server-tuned, live)
   k10.rgb->brightness(gBright);
   for (int i = 0; i < 3; i++) k10.rgb->write(i, gLeds[i]);
 
   if (!webUp && WiFi.status() == WL_CONNECTED) { web.on("/", handleRoot); web.on("/live", handleLive); web.begin(); webUp = true; Serial.printf("[web] http://%s/\n", WiFi.localIP().toString().c_str()); }
 
-  maybeScan(now);   // periodic non-blocking WiFi scan -> aps for geolocation
-
-  // upload sensors + get the server render ~3x/sec (colour + brightness live from the server)
+  maybeScan(now);
   if (now - lastPost > 300 && WiFi.status() == WL_CONNECTED) { lastPost = now; syncWithServer(); }
-
-  delay(gFps > 0 ? gFps : 35);   // server-tuned frame delay
+  delay(gFps > 0 ? gFps : 35);
 }

@@ -49,6 +49,7 @@ static uint32_t hex2u32(const char* s) { return s ? (uint32_t)strtol(s, nullptr,
 static String urlOf(const char* p) { return String("http://") + EDGE_HOST + ":" + EDGE_PORT + p; }
 
 static void wavHeader(uint8_t* h, uint32_t dl, uint32_t sr, uint16_t ch, uint16_t bps) {
+  memset(h, 0, 44);              // <-- critical: buffer is not zeroed; unset header bytes were garbage
   uint32_t br = sr*ch*bps/8; uint16_t ba = ch*bps/8; uint32_t ck = 36+dl;
   memcpy(h,"RIFF",4); h[4]=ck;h[5]=ck>>8;h[6]=ck>>16;h[7]=ck>>24; memcpy(h+8,"WAVE",4);
   memcpy(h+12,"fmt ",4); h[16]=16; h[20]=1; h[22]=ch; h[24]=sr;h[25]=sr>>8;h[26]=sr>>16;h[27]=sr>>24;
@@ -145,6 +146,7 @@ void setup() {
   k10.rgb->brightness(6); k10.rgb->write(-1, 0x1E7BFF);
   capBuf = (uint8_t*)heap_caps_malloc(44+160000, MALLOC_CAP_SPIRAM);
   if (!capBuf) capBuf = (uint8_t*)malloc(44+160000);
+  digital_write(eAmp_Gain, 1);   // enable MIC input gain (needed for usable capture level)
   bootBeep();                    // audible speaker self-test on power-up
   WiFi.mode(WIFI_STA); WiFi.begin(WIFI_SSID, WIFI_PASS);
   xTaskCreatePinnedToCore(netAudioTask, "net", 10240, nullptr, 1, nullptr, 0);

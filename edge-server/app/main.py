@@ -220,10 +220,45 @@ async def voice_raw(request: Request):
     """Raw WAV body from the K10 (I2S capture) -> STT -> brain -> reply(+TTS).
     The device shows the reply via its next /ingest poll (state.say + tone colour)."""
     data = await request.body()
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-        tmp.write(data)
-        path = tmp.name
+    # The device's on-board WAV header is unreliable; rebuild a correct one server-side.
+    # Body = 44-byte header + raw PCM16 stereo @ 16 kHz. Re-wrap the PCM cleanly for Whisper.
+    import wave as _wave
+    try:
+        (Path(settings.data_dir) / "last_raw.bin").write_bytes(data)
+    except Exception:
+        pass
+    raw = data[44:] if len(data) > 44 else data
+    raw = raw[: len(raw) // 2 * 2]
+    rms = 0
+    mono = raw
+    try:
+        import numpy as _np
+        def _rms(x): return int(_np.sqrt(_np.mean(x.astype(_np.float32) ** 2))) if x.size else 0
+        le = _np.frombuffer(raw, dtype="<i2")
+        be = _np.frombuffer(raw, dtype=">i2").astype(_np.int16)
+        # try both byte orders and both stereo channels; the real mic signal is the loudest
+        cands = {"LE_L": le[0::2], "LE_R": le[1::2], "BE_L": be[0::2], "BE_R": be[1::2]}
+        best = max(cands.items(), key=lambda kv: _rms(kv[1]))
+        rmses = {k: _rms(v) for k, v in cands.items()}
+        a = best[1].astype(_np.float32)
+        rms = _rms(best[1])
+        if 3 < rms < 3000:                       # normalise quiet mic toward a healthy STT level
+            a = _np.clip(a * min(30.0, 2500.0 / max(rms, 1)), -32768, 32767)
+        mono = a.astype("<i2").tobytes()
+        print(f"[mic-analyze] chan={best[0]} rmses={rmses}", flush=True)
+    except Exception as e:
+        print("[mic-analyze] err", e, flush=True)
+    path = str(Path(settings.data_dir) / "last_device.wav")
+    try:
+        with _wave.open(path, "wb") as wf:
+            wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(16000); wf.writeframes(mono)
+    except Exception:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(data); path = tmp.name
     turn = assistant.handle_wav(path)
+    print(f"[voice-raw] bytes={len(data)} rms={rms} transcript={turn.get('transcript')!r} "
+          f"woke={turn.get('woke')} ignored={turn.get('ignored')} reply={ (turn.get('reply') or '')[:40]!r}",
+          flush=True)
     if turn.get("reply"):
         _LAST_SAY["text"] = turn["reply"]; _LAST_SAY["ts"] = time.time()
     return turn

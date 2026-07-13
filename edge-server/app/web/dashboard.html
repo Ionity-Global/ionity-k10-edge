@@ -68,6 +68,7 @@
   <div class="t">IONITY <small>Home Assistant · Edge</small></div>
   <div class="grow"></div>
   <button class="pill" id="installBtn" style="display:none;cursor:pointer;background:var(--cyan);color:#04141c;border:none;font-weight:700">⬇ Install app</button>
+  <button class="pill" id="claudeToggle" style="cursor:pointer" title="Switch brain: Claude (your Google login) vs local gemma">🧠 Claude: …</button>
   <span class="pill" id="pBrain">brain …</span>
   <span class="pill" id="pStt">stt …</span>
   <span class="pill" id="pBridge">claude …</span>
@@ -256,6 +257,7 @@ async function status(){try{
   const s=await(await fetch(BASE+'/api/status')).json();const m=s.brain?.models||{},br=s.brain?.bridge||{},c=s.brain?.cache||{};
   setPill('pStt',m.stt,m.stt?'stt ready':'stt off');
   setPill('pBridge',br.enabled,br.enabled?'claude bridge':'claude off');
+  const ct=document.getElementById('claudeToggle');ct.textContent='🧠 Claude: '+(br.enabled?'ON':'OFF');ct.className='pill'+(br.enabled?' on':'');
   setPill('pBrain',m.local_llm,m.local_llm?'gemma ready':'brain: cache');
   document.getElementById('dBrain').textContent=(br.enabled?'claude→':'')+'gemma4:e2b · vision gemma3:4b';
   document.getElementById('dCache').textContent=(c.items??0)+' Q&A · '+(c.embedder||'');
@@ -280,6 +282,15 @@ setInterval(async()=>{try{
     if(w.ok){new Audio(URL.createObjectURL(await w.blob())).play().catch(()=>{});}
     else if(window.speechSynthesis){const u=new SpeechSynthesisUtterance(d.text);u.rate=1.02;speechSynthesis.speak(u);}}
 }catch(e){}},900);
+
+/* Claude OAuth toggle — flip brain between Claude (web bridge / your Google login) and local gemma */
+document.getElementById('claudeToggle').onclick=async()=>{
+  const s=await(await fetch(BASE+'/api/status')).json();
+  const on=s.brain?.bridge?.enabled;
+  await fetch(BASE+'/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bridge_mode:on?'off':'http'})});
+  if(!on) alert('Claude ON. If it does not answer, start bridge\\claude-web\\START-BRIDGE.bat and sign in with Google once. Until then it falls back to local gemma.');
+  status();
+};
 
 /* text */
 document.getElementById('send').onclick=sendText;

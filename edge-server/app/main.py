@@ -286,16 +286,31 @@ async def voice_raw(request: Request):
             x = x - x.mean(); d = float(_np.dot(x, x))
             return float(_np.dot(x[:-1], x[1:]) / d) if d else 0.0
         a = L if _rms(L) >= _rms(R) else R          # the mic lives on one channel
-        a -= a.mean()                                # remove DC offset
-        rms = int(_rms(a)); ac = _ac1(a)
-        peak = float(_np.abs(a).max()) if a.size else 0.0
-        if rms < 25:                                 # silence — don't waste an STT pass
-            print(f"[mic] silence rms={rms}", flush=True)
+        a = a - a.mean()                             # remove DC offset
+        rms0 = _rms(a); ac = _ac1(a)
+        if rms0 < 6:                                 # true silence — skip the STT pass
+            print(f"[mic] silence rms={rms0:.0f}", flush=True)
             return {"ok": False, "note": "silence", "transcript": ""}
-        if peak > 0:                                 # gentle normalise to ~60% FS (no clipping)
-            a = a * min(6.0, 0.6 * 32767.0 / peak)
+        # 1) HIGH-PASS ~90 Hz: kill DC drift + low rumble (vectorised, fast)
+        try:
+            from scipy.signal import butter, lfilter
+            b, aa = butter(2, 90.0 / 8000.0, btype="high")
+            a = lfilter(b, aa, a).astype(_np.float32)
+        except Exception:
+            a = (a - _np.concatenate(([0.0], a[:-1]))).astype(_np.float32)  # crude 1-tap HPF
+        # 2) NOISE REDUCTION (spectral gating) if available
+        try:
+            import noisereduce as _nr
+            a = _nr.reduce_noise(y=a, sr=16000, stationary=False, prop_decrease=0.85).astype(_np.float32)
+        except Exception:
+            pass
+        # 3) AGC: the K10 mic is very quiet (peak ~2% FS) -> normalise to a healthy target RMS
+        rms1 = _rms(a) or 1.0
+        gain = max(1.0, min(60.0, 3200.0 / rms1))    # e.g. rms 110 -> ~29x
+        a = a * gain
         mono = _np.clip(a, -32768, 32767).astype("<i2").tobytes()
-        print(f"[mic] rms={rms} ac1={ac:.2f} peak={int(peak)}", flush=True)
+        rms = int(_rms(a))
+        print(f"[mic] rms_in={rms0:.0f} ac1={ac:.2f} gain={gain:.1f}x rms_out={rms}", flush=True)
     except Exception as e:
         print("[mic-analyze] err", e, flush=True)
     path = str(Path(settings.data_dir) / "last_device.wav")

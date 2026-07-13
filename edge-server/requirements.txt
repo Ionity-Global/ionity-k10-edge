@@ -11,6 +11,9 @@ websockets>=12.0
 # ---- Voice pipeline (Home-Assistant style: STT + fluent TTS, on the edge) ----
 faster-whisper>=1.2            # speech-to-text (Whisper), CPU int8
 piper-tts>=1.4                 # fluent local text-to-speech (download a voice into models/piper)
+scipy>=1.11                    # audio front-end: high-pass filter (AGC/de-noise)
+noisereduce>=3.0               # spectral-gating noise cancellation on the mic stream
+sentence-transformers>=3.0     # transformer embeddings for the semantic cache (learns)
 
 # ---- MCP server (expose the assistant as tools to Claude / any MCP client) ----
 mcp>=1.0                       # run edge-server/mcp_server.py (see START-MCP.bat)

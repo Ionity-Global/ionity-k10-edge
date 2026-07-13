@@ -12,8 +12,9 @@
 #include "driver/i2s.h"
 #include "esp_heap_caps.h"
 #include <math.h>
-#include "ai_glyph.h"           // AI logo -> big-endian RGB565 (LV_COLOR_16_SWAP=1)
-#include "ionity_glyph.h"       // IONITY wordmark -> big-endian RGB565
+#include <lvgl.h>
+#include "ai_glyph.h"           // AI logo -> TRUE_COLOR_ALPHA (transparent, blends onto the orb)
+#include "ionity_glyph.h"       // IONITY wordmark -> TRUE_COLOR_ALPHA (transparent)
 
 #if __has_include("secrets.h")
   #include "secrets.h"
@@ -33,6 +34,7 @@
 
 UNIHIKER_K10 k10;
 Music music;                    // vendor audio (proven speaker path)
+AHT20 aht20;                    // temp + humidity
 static const int SW = 240, SH = 320, CX = 120, CY = 128;
 static const uint32_t BG = 0x03080F;
 
@@ -43,7 +45,18 @@ static volatile float gVoice = 0;                 // LIVE mic level 0..1 -> orb 
 static volatile int gRadius = 40; static volatile uint8_t gBright = 6;
 static char gLabel[16] = "IDLE"; static char gSay[120] = "";
 static char gHeard[120] = "";                     // last thing STT transcribed (mic proof)
+static volatile uint32_t gAudioSeq = 0, gPlayedSeq = 0;   // server bumps audio_seq per new TTS clip
+static float gTemp = 0, gHum = 0; static uint16_t gAls = 0;
 static uint8_t* capBuf = nullptr;
+
+// transparent logos as LVGL image descriptors (alpha-blended by the canvas)
+static lv_img_dsc_t imgAI, imgION;
+static void initLogos() {
+  imgAI.header.always_zero = 0; imgAI.header.w = AI_W; imgAI.header.h = AI_H;
+  imgAI.header.cf = LV_IMG_CF_TRUE_COLOR_ALPHA; imgAI.data_size = AI_W * AI_H * 3; imgAI.data = AI_GLYPH;
+  imgION.header.always_zero = 0; imgION.header.w = ION_W; imgION.header.h = ION_H;
+  imgION.header.cf = LV_IMG_CF_TRUE_COLOR_ALPHA; imgION.data_size = ION_W * ION_H * 3; imgION.data = ION_GLYPH;
+}
 
 static uint32_t hex2u32(const char* s) { return s ? (uint32_t)strtol(s, nullptr, 16) : 0; }
 static String urlOf(const char* p) { return String("http://") + EDGE_HOST + ":" + EDGE_PORT + p; }
@@ -89,6 +102,7 @@ static void syncWithServer() {
   HTTPClient http; http.begin(urlOf("/ingest"));
   http.addHeader("Content-Type", "application/json"); http.setTimeout(1200);
   String body = String("{\"device_id\":\"ionity-k10\",\"telemetry\":{\"level\":") + gVoice +
+    ",\"temp_c\":" + gTemp + ",\"humidity\":" + gHum + ",\"light\":" + gAls +
     ",\"ip\":\"" + WiFi.localIP().toString() + "\"}}";
   if (http.POST(body) == 200) {
     JsonDocument d;
@@ -101,6 +115,7 @@ static void syncWithServer() {
         strncpy(gLabel, s["label"] | "IDLE", sizeof(gLabel)-1);
         JsonArray leds = s["leds"]; for (int i=0;i<3 && i<(int)leds.size();i++) gLeds[i]=hex2u32(leds[i]|"000000");
         strncpy(gSay, s["say"] | "", sizeof(gSay)-1); gSay[sizeof(gSay)-1]=0;
+        gAudioSeq = (uint32_t)(s["audio_seq"] | (int)gAudioSeq);   // new TTS clip available?
       }
     }
   }
@@ -116,6 +131,8 @@ static void netAudioTask(void*) {
   for (;;) {
     if (WiFi.status()!=WL_CONNECTED || !capBuf) { vTaskDelay(pdMS_TO_TICKS(300)); continue; }
     syncWithServer();                                  // refresh orb colour/label/say (~every cycle)
+    // Speak EVERY new LLM reply through the ESP speaker (web chat, voice, dispatch — all of it)
+    if (gAudioSeq != gPlayedSeq) { playSay(); gPlayedSeq = gAudioSeq; }
     size_t off=0, rd=0;
     for (int c=0;c<CHUNKS;c++){
       if (i2s_read(I2S_NUM_0, capBuf+44+off, CHUNK, &rd, pdMS_TO_TICKS(400))!=ESP_OK || rd==0) break;
@@ -146,6 +163,7 @@ void setup() {
   k10.rgb->brightness(6); k10.rgb->write(-1, 0x1E7BFF);
   capBuf = (uint8_t*)heap_caps_malloc(44+160000, MALLOC_CAP_SPIRAM);
   if (!capBuf) capBuf = (uint8_t*)malloc(44+160000);
+  initLogos();                   // transparent IONITY + AI logo image descriptors
   digital_write(eAmp_Gain, 1);   // enable MIC input gain (needed for usable capture level)
   bootBeep();                    // audible speaker self-test on power-up
   WiFi.mode(WIFI_STA); WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -153,19 +171,24 @@ void setup() {
 }
 
 void loop() {
-  // DISPLAY ONLY — never blocks on WiFi/I2S, so it's always smooth.
+  // DISPLAY + I2C sensors — never blocks on WiFi/I2S, so it's always smooth.
+  static uint32_t lastSens = 0;
+  if (millis() - lastSens > 2000) {   // temp/humidity/light every 2 s (I2C is safe here)
+    lastSens = millis();
+    gTemp = aht20.getData(AHT20::eAHT20TempC);
+    gHum  = aht20.getData(AHT20::eAHT20HumiRH);
+    gAls  = k10.readALS();
+  }
   float vl = gVoice; uint32_t orb = gOrb;
   static float ph = 0; ph += 0.22f; float breathe = 0.5f + 0.5f*sinf(ph);
   int r = (int)gRadius + (int)(vl*34) + (int)(breathe*6);           // pulse reacts to your voice
   k10.canvas->canvasRectangle(0,0,SW,SH,BG,BG,true);
-  // IONITY logo (image) at the top
-  k10.canvas->canvasDrawBitmap(CX-ION_W/2, 6, ION_W, ION_H, ION_GLYPH);
+  // IONITY logo — TRANSPARENT (alpha-blended, no box)
+  k10.canvas->canvasDrawImage(CX-ION_W/2, 6, &imgION);
   k10.canvas->canvasCircle(CX, CY, r+22, ((orb>>1)&0x7F7F7F), BG, false);
   k10.canvas->canvasCircle(CX, CY, r, orb, orb, true);
-  // transparent AI logo (image) on a dark disc in the orb centre
-  int dr = r*0.66 > AI_W/2 ? (int)(r*0.66) : AI_W/2;
-  k10.canvas->canvasCircle(CX, CY, dr, BG, BG, true);
-  k10.canvas->canvasDrawBitmap(CX-AI_W/2, CY-AI_H/2, AI_W, AI_H, AI_GLYPH);
+  // AI logo — TRANSPARENT, blended straight onto the orb (no disc)
+  k10.canvas->canvasDrawImage(CX-AI_W/2, CY-AI_H/2, &imgAI);
   char ln[100];
   // status + WiFi dot
   bool wifi = WiFi.status() == WL_CONNECTED;

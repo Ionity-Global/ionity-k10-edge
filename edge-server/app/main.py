@@ -28,6 +28,20 @@ from app.meta import provenance
 from app import orb as orbcfg
 from app.voice.assistant import Assistant
 from app.render import orb_render
+from app import logbuf
+
+# ---- user settings overlay (dashboard Settings panel) — persisted, applied at boot ----
+_TUNABLE = ("wake_word", "assistant_name", "ollama_model", "bridge_mode", "idle_sleep_s",
+            "ha_url", "ha_token", "hue_bridge", "chromecast_name", "mqtt_host", "mqtt_port",
+            "dispatch_webhook_url", "image_api_url")
+_SETTINGS_PATH = Path(settings.data_dir) / "settings.json"
+try:
+    if _SETTINGS_PATH.exists():
+        for k, v in json.loads(_SETTINGS_PATH.read_text()).items():
+            if k in _TUNABLE:
+                setattr(settings, k, v)
+except Exception:
+    pass
 
 app = FastAPI(title="IonityEdge · K10 — Edge Brain", version=__version__)
 app.add_middleware(
@@ -131,6 +145,7 @@ def ingest(body: dict = Body(...)):
         state["label"] = a["state"].upper()
         state["leds"] = [orbcfg._dark(c, 0.9), orbcfg._dark(c, 0.6), orbcfg._dark(c, 0.35)]
     state["ai_state"] = a["state"]
+    state["audio_seq"] = a.get("audio_seq", 0)   # device plays say.wav when this bumps
     if a.get("reply"):
         state["say"] = a["reply"][:96]           # Claude's words on the device
     elif _LAST_SAY["text"] and (time.time() - _LAST_SAY["ts"] < 25):
@@ -198,6 +213,7 @@ def chat(body: dict = Body(...)):
     reply = turn.get("reply", "")
     _LAST_SAY["text"] = reply
     _LAST_SAY["ts"] = time.time()
+    logbuf.add("chat", f"{text[:60]!r} -> [{turn.get('source')}] {reply[:60]!r}")
     return {"reply": reply, "source": turn.get("source"), "tone": turn.get("tone"),
             "state": turn.get("state"), "audio": turn.get("audio")}
 
@@ -259,6 +275,8 @@ async def voice_raw(request: Request):
     print(f"[voice-raw] bytes={len(data)} rms={rms} transcript={turn.get('transcript')!r} "
           f"woke={turn.get('woke')} ignored={turn.get('ignored')} reply={ (turn.get('reply') or '')[:40]!r}",
           flush=True)
+    if turn.get("transcript"):
+        logbuf.add("voice", f"heard: {turn.get('transcript')!r} -> {'IGNORED' if turn.get('ignored') else (turn.get('reply') or '')[:60]}")
     if turn.get("reply"):
         _LAST_SAY["text"] = turn["reply"]; _LAST_SAY["ts"] = time.time()
     return turn
@@ -320,6 +338,80 @@ def screen_565():
     return Response(content=data, media_type="application/octet-stream",
                     headers={"X-Screen-On": "1" if s.get("screen_on") else "0",
                              "X-Audio-Seq": str(s.get("audio_seq", 0))})
+
+
+# ---------- Settings (dashboard panel; persisted; applied live) ----------
+@app.get("/api/settings")
+def settings_get():
+    return {k: getattr(settings, k, "") for k in _TUNABLE}
+
+
+@app.post("/api/settings")
+def settings_set(body: dict = Body(...)):
+    changed = {}
+    for k, v in (body or {}).items():
+        if k in _TUNABLE:
+            cur = getattr(settings, k)
+            try:
+                v = type(cur)(v) if not isinstance(cur, str) else str(v)
+            except Exception:
+                continue
+            setattr(settings, k, v)
+            changed[k] = v
+    try:
+        _SETTINGS_PATH.write_text(json.dumps({k: getattr(settings, k) for k in _TUNABLE}, indent=2))
+    except Exception:
+        pass
+    # apply live where possible
+    try:
+        orc.llm.model = settings.ollama_model
+        orc.bridge.mode = (settings.bridge_mode or "off").lower()
+        if assistant.home:
+            assistant.home._ha_tried = assistant.home._hue_tried = False   # re-init lazily
+    except Exception:
+        pass
+    logbuf.add("settings", f"updated: {list(changed.keys())}")
+    return {"ok": True, "changed": changed}
+
+
+# ---------- Logs (dashboard panel) ----------
+@app.get("/api/logs")
+def logs():
+    return {"logs": logbuf.recent()}
+
+
+# ---------- Vision: camera image -> Gemma multimodal (OCR + description), OCR fallback ----------
+@app.post("/api/see")
+async def see(file: UploadFile = File(...), prompt: str = "Describe this image and read any text in it (OCR). Be concise."):
+    img = await file.read()
+    logbuf.add("see", f"image {len(img)} bytes")
+    # 1) Gemma multimodal via Ollama (local, no cloud)
+    try:
+        import base64
+        req = urllib.request.Request(
+            settings.ollama_url.rstrip("/") + "/api/generate",
+            data=json.dumps({"model": settings.ollama_model, "prompt": prompt,
+                             "images": [base64.b64encode(img).decode()], "stream": False}).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            res = json.loads(r.read())
+        text = (res.get("response") or "").strip()
+        if text:
+            assistant.last_reply = text; assistant.tone = "neutral"
+            assistant.transcript.append({"role": "assistant", "text": "[vision] " + text[:300], "ts": time.time()})
+            assistant._speak(text[:300]); assistant.set_state("speaking")
+            _LAST_SAY["text"] = text[:300]; _LAST_SAY["ts"] = time.time()
+            logbuf.add("see", "gemma vision ok")
+            return {"ok": True, "backend": "gemma-vision", "text": text,
+                    "provenance": provenance.stamp("vision", {"len": len(img)})}
+    except Exception as e:
+        logbuf.add("see", f"gemma vision failed: {e}")
+    # 2) fallback: classic OCR + faces/QR
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+        tmp.write(img); path = tmp.name
+    out = orc.analyze_image(path, want_ocr=True)
+    txt = " ".join((out.get("ocr") or {}).get("lines", []))[:400] if isinstance(out.get("ocr"), dict) else ""
+    return {"ok": True, "backend": "ocr", "text": txt or "(no text found)", "detail": out}
 
 
 # ---------- Smart-home control (Home Assistant / Hue / Cast / MQTT) ----------

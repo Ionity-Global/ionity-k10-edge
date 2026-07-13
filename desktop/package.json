@@ -1,0 +1,26 @@
+{
+  "name": "ionity-home-assistant",
+  "productName": "Ionity Home Assistant",
+  "version": "1.0.0",
+  "description": "Peper — the Ionity edge voice home assistant (desktop app). Policy 986 AED.",
+  "author": "Johan Wilhelm van Antwerp — Ionity (Pty) Ltd",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "today.ionity.homeassistant",
+    "productName": "IonityHomeAssistant",
+    "directories": { "output": "dist" },
+    "files": ["main.js", "preload.js", "brand/**"],
+    "extraResources": [{ "from": "../edge-server", "to": "edge-server",
+      "filter": ["**/*", "!**/__pycache__/**", "!models/**", "!data/**", "!*.exe"] }],
+    "win": { "target": "portable", "icon": "brand/icon.ico" },
+    "portable": { "artifactName": "IonityHomeAssistant.exe" }
+  }
+}

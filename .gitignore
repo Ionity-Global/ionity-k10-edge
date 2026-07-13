@@ -86,3 +86,7 @@ installer/public/firmware/*.bin
 
 # CI workflow needs a workflow-scoped token to push; add it via GitHub web UI or a PAT with workflow scope.
 /.github/workflows/
+
+# Electron desktop app
+desktop/node_modules/
+desktop/dist/

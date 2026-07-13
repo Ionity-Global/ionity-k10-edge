@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     # ---- Voice home-assistant ----
     assist_enabled: bool = True
     wake_word: str = "peper"           # primary wake word (server-side, on the edge)
-    wake_words: str = "peper,pepper,hi pepper,hey pepper,hi peper,peppa,pepa"  # custom wake words (CSV, learnable)
+    wake_words: str = "peper,pepper,piet,peet,hi pepper,hey pepper,hi piet,hey piet,hi peper,peppa,pepa,pete"  # custom wake words (CSV, learnable)
     temp_alert_c: float = 38.0         # speak + tint orange when the room passes this temperature
     assistant_name: str = "Ionity"
     orb_stream_fps: int = 10           # server->device orb frame rate

@@ -136,7 +136,7 @@ static void syncWithServer() {
 // Continuous mic: capture in small chunks (live RMS -> gVoice), then POST an utterance; speak reply.
 static void netAudioTask(void*) {
   const uint32_t SR=16000; const uint16_t CH=2; const int CHUNK=3200*CH; // ~100 ms stereo bytes
-  const int CHUNKS=16;                                                    // ~1.6 s utterance
+  const int CHUNKS=13;                                                    // ~1.3 s utterance (snappier)
   const uint32_t dl = (uint32_t)CHUNK*CHUNKS;
   float micMax = 1500;
   bool firstSync = true;
@@ -178,8 +178,8 @@ static void netAudioTask(void*) {
     http.end();
     gVoice = 0;
     // NOTE: playback happens ONLY via the audio_seq check above — never here.
-    // (The old duplicate playSay() call made every reply play twice and fed the loop.)
-    vTaskDelay(pdMS_TO_TICKS(20));
+    // No idle delay: loop straight back into capture to minimise the not-listening gap.
+    vTaskDelay(pdMS_TO_TICKS(1));
   }
 }
 
@@ -229,7 +229,7 @@ void loop() {
   float vl = gVoice; uint32_t orb = gOrb;
   // ORANGE FLASH when voice is heard (local RMS spike) — instant visual "I heard you"
   static uint32_t flashUntil = 0;
-  if (vl > 0.22f) flashUntil = millis() + 220;
+  if (vl > 0.16f) flashUntil = millis() + 250;
   bool voiceFlash = millis() < flashUntil;
   if (voiceFlash) orb = 0xFF7A00;   // orange
   static float ph = 0; ph += 0.22f; float breathe = 0.5f + 0.5f*sinf(ph);
@@ -253,7 +253,7 @@ void loop() {
   k10.canvas->canvasRectangle(52,234,mw,10,0x00D2FF,0x00D2FF,true);
   // what the server HEARD (proves mic -> WiFi -> STT)
   if (gOCRPending) { k10.canvas->canvasText("OCR MODE: looking...",12,252,0xF7B731,k10.canvas->eCNAndENFont16,60,true); }
-  else { snprintf(ln,sizeof(ln),"heard: %s", gHeard[0]?gHeard:"(say Peper · A/B=camera OCR)"); k10.canvas->canvasText(ln,12,252,0x7FA6C9,k10.canvas->eCNAndENFont16,60,true); }
+  else { snprintf(ln,sizeof(ln),"heard: %s", gHeard[0]?gHeard:"(say Pepper/Piet · A/B=OCR)"); k10.canvas->canvasText(ln,12,252,0x7FA6C9,k10.canvas->eCNAndENFont16,60,true); }
   // Claude's reply (spoken via the speaker)
   snprintf(ln,sizeof(ln),"%s",gSay[0]?gSay:""); k10.canvas->canvasText(ln,12,276,0xEAF6FF,k10.canvas->eCNAndENFont16,60,true);
   k10.canvas->canvasText("Policy 986 AED",12,304,0x2A4A5A,k10.canvas->eCNAndENFont16,40,true);

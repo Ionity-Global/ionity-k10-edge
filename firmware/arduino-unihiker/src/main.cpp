@@ -1,16 +1,18 @@
-// IonityEdge · K10 — VOICE HOME-ASSISTANT NODE v9 (DFRobot UNIHIKER core)
-// PURE node: the ESP does NO AI compute. It (1) continuously streams mic audio to the
-// server (no push-to-talk), (2) DISPLAYS the full screen the server renders (IONITY logo
-// + orb whose colour follows the AI's state/tone + AI glyph + Claude's words), and
-// (3) plays the AI's spoken reply through the ESP speaker.
-// The SERVER hears the wake word ("Hello"), thinks (Claude / gemma4:e2b), speaks, and
-// renders the screen — all on the edge.  © Ionity (Pty) Ltd · Policy 986 AED · CC BY-SA 4.0
+// IonityEdge · K10 — VOICE HOME-ASSISTANT NODE v11 (DFRobot UNIHIKER core)
+// Fixes: (1) RESPONSIVE — the display loop is fully decoupled from the network (draws ~50 fps
+// from shared state, never blocks on WiFi). (2) The orb/LEDs react LIVE to your voice (mic RMS).
+// (3) The AI reply is SPOKEN through the speaker (amp enabled + 16 kHz). (4) The AI logo image
+// is back in the orb centre. Continuous listening (no button); wake word "Peper" on the server.
+// The device does NO AI compute — the server computes colour/tone and speaks. © Ionity · Policy 986 AED
 #include "unihiker_k10.h"
+#include "initBoard.h"          // digital_write(eAmp_Gain, ...) — speaker amplifier enable
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include "driver/i2s.h"
 #include "esp_heap_caps.h"
+#include <math.h>
+#include "ai_glyph.h"           // AI logo -> big-endian RGB565 (LV_COLOR_16_SWAP=1)
 
 #if __has_include("secrets.h")
   #include "secrets.h"
@@ -29,123 +31,137 @@
 #endif
 
 UNIHIKER_K10 k10;
+static const int SW = 240, SH = 320, CX = 120, CY = 128;
+static const uint32_t BG = 0x03080F;
 
-static const int FW = 240, FH = 320;
-static const uint32_t FRAME_BYTES = (uint32_t)FW * FH * 2;   // 153600 RGB565
-static uint8_t* frameBuf = nullptr;
+// shared state (written by the net/audio task, read by the display loop)
+static volatile uint32_t gOrb = 0x1E7BFF;
+static volatile uint32_t gLeds[3] = {0, 0, 0};
+static volatile float gVoice = 0;                 // LIVE mic level 0..1 -> orb reactivity
+static volatile int gRadius = 40; static volatile uint8_t gBright = 6;
+static char gLabel[16] = "IDLE"; static char gSay[120] = "";
 static uint8_t* capBuf = nullptr;
 
-static String urlOf(const char* path) { return String("http://") + EDGE_HOST + ":" + EDGE_PORT + path; }
+static uint32_t hex2u32(const char* s) { return s ? (uint32_t)strtol(s, nullptr, 16) : 0; }
+static String urlOf(const char* p) { return String("http://") + EDGE_HOST + ":" + EDGE_PORT + p; }
 
-static void wavHeader(uint8_t* h, uint32_t dataLen, uint32_t sr, uint16_t ch, uint16_t bps) {
-  uint32_t byteRate = sr * ch * bps / 8; uint16_t blk = ch * bps / 8; uint32_t chunk = 36 + dataLen;
-  memcpy(h, "RIFF", 4);   h[4]=chunk; h[5]=chunk>>8; h[6]=chunk>>16; h[7]=chunk>>24;
-  memcpy(h+8, "WAVE", 4); memcpy(h+12, "fmt ", 4);
-  h[16]=16; h[17]=0; h[18]=0; h[19]=0;  h[20]=1; h[21]=0;  h[22]=ch; h[23]=0;
-  h[24]=sr; h[25]=sr>>8; h[26]=sr>>16; h[27]=sr>>24;
-  h[28]=byteRate; h[29]=byteRate>>8; h[30]=byteRate>>16; h[31]=byteRate>>24;
-  h[32]=blk; h[33]=0;  h[34]=bps; h[35]=0;
-  memcpy(h+36, "data", 4); h[40]=dataLen; h[41]=dataLen>>8; h[42]=dataLen>>16; h[43]=dataLen>>24;
+static void wavHeader(uint8_t* h, uint32_t dl, uint32_t sr, uint16_t ch, uint16_t bps) {
+  uint32_t br = sr*ch*bps/8; uint16_t ba = ch*bps/8; uint32_t ck = 36+dl;
+  memcpy(h,"RIFF",4); h[4]=ck;h[5]=ck>>8;h[6]=ck>>16;h[7]=ck>>24; memcpy(h+8,"WAVE",4);
+  memcpy(h+12,"fmt ",4); h[16]=16; h[20]=1; h[22]=ch; h[24]=sr;h[25]=sr>>8;h[26]=sr>>16;h[27]=sr>>24;
+  h[28]=br;h[29]=br>>8;h[30]=br>>16;h[31]=br>>24; h[32]=ba; h[34]=bps; memcpy(h+36,"data",4);
+  h[40]=dl;h[41]=dl>>8;h[42]=dl>>16;h[43]=dl>>24;
 }
 
-// Play the server's TTS reply (16 kHz mono WAV) through the ESP speaker (I2S TX, dup to stereo).
-static void playSayWav() {
+// Speak the reply through the ESP speaker: enable amp, 16 kHz, dup mono->stereo, then restore.
+static void playSay() {
   if (WiFi.status() != WL_CONNECTED) return;
-  HTTPClient http; http.begin(urlOf("/api/say.wav")); http.setTimeout(8000);
-  int code = http.GET();
-  if (code == 200) {
+  HTTPClient http; http.begin(urlOf("/api/say.wav")); http.setTimeout(9000);
+  if (http.GET() == 200) {
     WiFiClient* st = http.getStreamPtr();
     uint8_t hdr[44]; size_t hn = 0;
-    while (hn < 44 && http.connected()) { int r = st->readBytes(hdr + hn, 44 - hn); if (r <= 0) break; hn += r; }
-    int16_t mono[256]; int16_t stereo[512]; size_t bw;
+    while (hn < 44 && http.connected()) { int r = st->readBytes(hdr+hn, 44-hn); if (r<=0) break; hn+=r; }
+    uint32_t clk = i2s_get_clk(I2S_NUM_0);
+    i2s_set_sample_rates(I2S_NUM_0, 16000);
+    digital_write(eAmp_Gain, 1);                 // <-- enable the speaker amplifier (was missing!)
+    int16_t mono[256], stereo[512]; size_t bw;
     while (http.connected()) {
-      int r = st->readBytes((uint8_t*)mono, sizeof(mono));
-      if (r <= 0) break;
-      int n = r / 2;
-      for (int i = 0; i < n; i++) { stereo[2*i] = mono[i]; stereo[2*i+1] = mono[i]; }
-      i2s_write(I2S_NUM_0, stereo, n * 4, &bw, portMAX_DELAY);
+      int r = st->readBytes((uint8_t*)mono, sizeof(mono)); if (r<=0) break;
+      int n = r/2; for (int i=0;i<n;i++){ stereo[2*i]=mono[i]; stereo[2*i+1]=mono[i]; }
+      i2s_write(I2S_NUM_0, stereo, n*4, &bw, portMAX_DELAY);
     }
     i2s_zero_dma_buffer(I2S_NUM_0);
+    digital_write(eAmp_Gain, 0);
+    i2s_set_sample_rates(I2S_NUM_0, clk);
   }
   http.end();
 }
 
-// Continuously capture ~2.5 s of mic audio and POST it to the server (server detects wake word).
-static void captureAndSend() {
-  const uint32_t SR = 16000; const uint16_t CH = 2, BPS = 16; const float SECS = 2.5f;
-  const uint32_t dataLen = (uint32_t)(SR * CH * (BPS/8) * SECS);   // 160000
-  if (!capBuf) return;
-  wavHeader(capBuf, dataLen, SR, CH, BPS);
-  size_t got = 0, rd = 0;
-  while (got < dataLen) {
-    if (i2s_read(I2S_NUM_0, capBuf + 44 + got, (dataLen-got>4096?4096:dataLen-got), &rd, pdMS_TO_TICKS(1000)) != ESP_OK || rd == 0) break;
-    got += rd;
-  }
-  if (WiFi.status() != WL_CONNECTED) return;
-  HTTPClient http; http.begin(urlOf("/api/voice-raw"));
-  http.addHeader("Content-Type", "audio/wav"); http.setTimeout(30000);
-  int code = http.POST(capBuf, 44 + got);
-  bool speak = false;
-  if (code == 200) {
-    String body = http.getString();
+static void syncWithServer() {
+  HTTPClient http; http.begin(urlOf("/ingest"));
+  http.addHeader("Content-Type", "application/json"); http.setTimeout(1200);
+  String body = String("{\"device_id\":\"ionity-k10\",\"telemetry\":{\"level\":") + gVoice +
+    ",\"ip\":\"" + WiFi.localIP().toString() + "\"}}";
+  if (http.POST(body) == 200) {
     JsonDocument d;
-    if (!deserializeJson(d, body)) {
-      bool ignored = d["ignored"] | false;
-      const char* reply = d["reply"] | "";
-      if (!ignored && strlen(reply) > 0) speak = true;
+    if (!deserializeJson(d, http.getString())) {
+      JsonObject s = d["state"];
+      if (!s.isNull()) {
+        gOrb = hex2u32(s["color"] | "1E7BFF");
+        gRadius = s["radius"] | (int)gRadius;
+        gBright = (uint8_t)(s["brightness"] | (int)gBright);
+        strncpy(gLabel, s["label"] | "IDLE", sizeof(gLabel)-1);
+        JsonArray leds = s["leds"]; for (int i=0;i<3 && i<(int)leds.size();i++) gLeds[i]=hex2u32(leds[i]|"000000");
+        strncpy(gSay, s["say"] | "", sizeof(gSay)-1); gSay[sizeof(gSay)-1]=0;
+      }
     }
   }
   http.end();
-  if (speak) playSayWav();
 }
 
-// Audio task (own core): listen -> upload -> (maybe) speak, forever.
-static void audioTask(void*) {
-  for (;;) { captureAndSend(); vTaskDelay(pdMS_TO_TICKS(40)); }
-}
-
-static void showText(const char* t) {
-  k10.canvas->canvasRectangle(0, 0, FW, FH, 0x03080F, 0x03080F, true);
-  k10.canvas->canvasText("IONITY", 70, 40, 0x2E7DE1, k10.canvas->eCNAndENFont24, 40, true);
-  k10.canvas->canvasText(t, 40, 150, 0x7FA6C9, k10.canvas->eCNAndENFont16, 40, true);
-  k10.canvas->updateCanvas();
+// Continuous mic: capture in small chunks (live RMS -> gVoice), then POST an utterance; speak reply.
+static void netAudioTask(void*) {
+  const uint32_t SR=16000; const uint16_t CH=2; const int CHUNK=3200*CH; // ~100 ms stereo bytes
+  const int CHUNKS=16;                                                    // ~1.6 s utterance
+  const uint32_t dl = (uint32_t)CHUNK*CHUNKS;
+  float micMax = 1500;
+  for (;;) {
+    if (WiFi.status()!=WL_CONNECTED || !capBuf) { vTaskDelay(pdMS_TO_TICKS(300)); continue; }
+    syncWithServer();                                  // refresh orb colour/label/say (~every cycle)
+    size_t off=0, rd=0;
+    for (int c=0;c<CHUNKS;c++){
+      if (i2s_read(I2S_NUM_0, capBuf+44+off, CHUNK, &rd, pdMS_TO_TICKS(400))!=ESP_OK || rd==0) break;
+      // live RMS of this chunk -> gVoice (drives the orb pulse & LED brightness)
+      int16_t* s=(int16_t*)(capBuf+44+off); int ns=rd/2; double acc=0;
+      for (int i=0;i<ns;i+=CH){ double v=s[i]; acc+=v*v; }
+      double rms=sqrt(acc/(ns/CH>0?ns/CH:1));
+      if (rms>micMax) micMax=rms; micMax*=0.999; if (micMax<1200) micMax=1200;
+      float lv=(float)(rms/micMax); if(lv>1)lv=1; gVoice = gVoice*0.5f + lv*0.5f;
+      off+=rd;
+    }
+    HTTPClient http; http.begin(urlOf("/api/voice-raw"));
+    http.addHeader("Content-Type","audio/wav"); http.setTimeout(30000);
+    int code=http.POST(capBuf, 44+off); bool speak=false;
+    if (code==200){ JsonDocument d; if(!deserializeJson(d,http.getString())){
+      bool ig=d["ignored"]|false; const char* rp=d["reply"]|""; if(!ig&&strlen(rp)>0) speak=true; } }
+    http.end();
+    gVoice = 0;
+    if (speak) playSay();
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
 }
 
 void setup() {
   Serial.begin(115200);
-  k10.begin(); k10.initScreen(2); k10.creatCanvas(); k10.setScreenBackground(0x03080F);
+  k10.begin(); k10.initScreen(2); k10.creatCanvas(); k10.setScreenBackground(BG);
   k10.rgb->brightness(6); k10.rgb->write(-1, 0x1E7BFF);
-  frameBuf = (uint8_t*)heap_caps_malloc(FRAME_BYTES, MALLOC_CAP_SPIRAM);
-  capBuf   = (uint8_t*)heap_caps_malloc(44 + 160000, MALLOC_CAP_SPIRAM);
-  showText("connecting...");
+  capBuf = (uint8_t*)heap_caps_malloc(44+160000, MALLOC_CAP_SPIRAM);
+  if (!capBuf) capBuf = (uint8_t*)malloc(44+160000);
   WiFi.mode(WIFI_STA); WiFi.begin(WIFI_SSID, WIFI_PASS);
-  uint32_t t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) delay(200);
-  showText(WiFi.status() == WL_CONNECTED ? "say: Hello" : "wifi failed");
-  // start the always-on mic streamer on the other core
-  xTaskCreatePinnedToCore(audioTask, "audio", 8192, nullptr, 1, nullptr, 0);
+  xTaskCreatePinnedToCore(netAudioTask, "net", 10240, nullptr, 1, nullptr, 0);
 }
 
 void loop() {
-  // Pure display: pull the full server-rendered screen and blit it (device does no compute).
-  if (WiFi.status() == WL_CONNECTED && frameBuf) {
-    HTTPClient http; http.begin(urlOf("/api/screen565")); http.setTimeout(6000);
-    int code = http.GET();
-    if (code == 200) {
-      WiFiClient* st = http.getStreamPtr();
-      size_t got = 0;
-      uint32_t t0 = millis();
-      while (got < FRAME_BYTES && (http.connected() || st->available()) && millis() - t0 < 5000) {
-        size_t av = st->available();
-        if (av) { int r = st->readBytes(frameBuf + got, (FRAME_BYTES - got < av ? FRAME_BYTES - got : av)); if (r > 0) got += r; }
-        else delay(1);
-      }
-      if (got == FRAME_BYTES) {
-        k10.canvas->canvasDrawBitmap(0, 0, FW, FH, frameBuf);
-        k10.canvas->updateCanvas();
-      }
-    }
-    http.end();
-  }
-  delay(180);   // ~5 fps
+  // DISPLAY ONLY — never blocks on WiFi/I2S, so it's always smooth.
+  float vl = gVoice; uint32_t orb = gOrb;
+  static float ph = 0; ph += 0.22f; float breathe = 0.5f + 0.5f*sinf(ph);
+  int r = (int)gRadius + (int)(vl*34) + (int)(breathe*6);           // pulse reacts to your voice
+  k10.canvas->canvasRectangle(0,0,SW,SH,BG,BG,true);
+  k10.canvas->canvasText("IONITY", 78, 8, 0x2E7DE1, k10.canvas->eCNAndENFont24, 40, true);
+  k10.canvas->canvasCircle(CX, CY, r+22, ((orb>>1)&0x7F7F7F), BG, false);
+  k10.canvas->canvasCircle(CX, CY, r, orb, orb, true);
+  // AI logo image on a dark disc in the centre
+  int dr = r*0.62 > AI_W/2 ? (int)(r*0.62) : AI_W/2;
+  k10.canvas->canvasCircle(CX, CY, dr, BG, BG, true);
+  k10.canvas->canvasDrawBitmap(CX-AI_W/2, CY-AI_H/2, AI_W, AI_H, AI_GLYPH);
+  char ln[80];
+  snprintf(ln,sizeof(ln),"%s",gLabel); k10.canvas->canvasText(ln,12,216,orb,k10.canvas->eCNAndENFont16,40,true);
+  k10.canvas->canvasText("say: Peper ...",12,238,0x7FA6C9,k10.canvas->eCNAndENFont16,40,true);
+  snprintf(ln,sizeof(ln),"%s",gSay[0]?gSay:""); k10.canvas->canvasText(ln,12,264,0xEAF6FF,k10.canvas->eCNAndENFont16,60,true);
+  k10.canvas->canvasText("Policy 986 AED",12,302,0x2A4A5A,k10.canvas->eCNAndENFont16,40,true);
+  k10.canvas->updateCanvas();
+  // LEDs follow the server colour, brightness reacts to your voice
+  k10.rgb->brightness((uint8_t)(3 + vl*6));
+  for (int i=0;i<3;i++) k10.rgb->write(i, gLeds[i] ? gLeds[i] : orb);
+  delay(18);
 }

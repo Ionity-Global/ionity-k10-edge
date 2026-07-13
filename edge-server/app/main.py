@@ -209,7 +209,7 @@ async def voice(file: UploadFile = File(...)):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
         tmp.write(await file.read())
         path = tmp.name
-    turn = assistant.handle_wav(path)
+    turn = assistant.handle_wav(path, gate=False)   # dashboard mic = explicit intent (no wake word)
     if turn.get("reply"):
         _LAST_SAY["text"] = turn["reply"]; _LAST_SAY["ts"] = time.time()
     return turn
@@ -263,6 +263,28 @@ def orb_frame(size: int = 240):
     png = orb_render.png_bytes(size, s["color"], s["level"], phase, s["state"])
     from fastapi.responses import Response
     return Response(content=png, media_type="image/png")
+
+
+# ---------- Full device screen rendered on the EDGE (IONITY logo + orb + AI glyph + text) ----------
+@app.get("/api/screen.png")
+def screen_png():
+    s = assistant.snapshot()
+    phase = (time.time() * 3.0) % (2 * 3.14159)
+    from fastapi.responses import Response
+    png = orb_render.screen_png(s["color"], s["level"], phase, s["state"], s.get("reply", ""), s["state"])
+    return Response(content=png, media_type="image/png")
+
+
+@app.get("/api/screen565")
+def screen_565():
+    """Raw 240x320 big-endian RGB565 the K10 blits with canvasDrawBitmap. Device does no compute."""
+    s = assistant.snapshot()
+    phase = (time.time() * 3.0) % (2 * 3.14159)
+    from fastapi.responses import Response
+    data = orb_render.screen_rgb565(s["color"], s["level"], phase, s["state"], s.get("reply", ""), s["state"])
+    return Response(content=data, media_type="application/octet-stream",
+                    headers={"X-Screen-On": "1" if s.get("screen_on") else "0",
+                             "X-Audio-Seq": str(s.get("audio_seq", 0))})
 
 
 # ---------- Dispatch / home-assistance hook ----------

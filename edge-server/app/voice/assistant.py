@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from app.config import settings
+from app.voice import tts_sapi
 
 STATES = ("sleeping", "idle", "listening", "thinking", "speaking")
 
@@ -45,7 +46,9 @@ class Assistant:
         self.last_user = ""
         self.last_reply = ""
         self.last_audio: str | None = None   # path to the last TTS wav (if any)
+        self.audio_seq = 0                     # bumped whenever new TTS audio is ready (device polls this)
         self.last_ts = time.time()
+        self.awake_until = 0.0                 # stays awake for follow-ups after a wake/interaction
         self.transcript: list[dict] = []      # [{role, text, ts}]
         self._lock = threading.Lock()
 
@@ -66,12 +69,17 @@ class Assistant:
             return TONE_COLORS.get(self.tone, STATE_COLORS["speaking"])
         return STATE_COLORS.get(self.state, "00D2FF")
 
+    def awake(self) -> bool:
+        return time.time() < self.awake_until
+
     def snapshot(self) -> dict:
         return {
             "state": self.state, "tone": self.tone, "color": self.color(),
             "level": round(self.level, 3), "name": settings.assistant_name,
             "user": self.last_user, "reply": self.last_reply,
             "audio": ("/api/say.wav" if self.last_audio else None),
+            "audio_seq": self.audio_seq, "awake": self.awake(),
+            "screen_on": self.awake() or self.state in ("listening", "thinking", "speaking"),
             "ts": self.last_ts, "transcript": self.transcript[-14:],
         }
 
@@ -83,16 +91,23 @@ class Assistant:
         return {"positive": "positive", "negative": "negative", "neutral": "neutral"}.get(lab, "neutral")
 
     def _speak(self, text: str) -> None:
-        """Best-effort server-side TTS -> wav on disk (played by the device / dashboard)."""
+        """Server-side TTS -> 16 kHz mono wav on disk. Piper if configured, else Windows SAPI.
+        The device fetches /api/say.wav and plays it through the ESP speaker."""
         self.last_audio = None
-        if not text or not self.orc.tts.available:
+        if not text:
             return
         out = str(Path(settings.data_dir) / "say.wav")
+        p = None
         try:
-            if self.orc.speak(text, out) and Path(out).exists():
-                self.last_audio = out
+            if self.orc.tts.available:
+                p = self.orc.speak(text, out)
+            if not p:
+                p = tts_sapi.synth(text, out)   # real voice on Windows, no install
         except Exception:
-            self.last_audio = None
+            p = None
+        if p and Path(p).exists():
+            self.last_audio = out
+            self.audio_seq += 1
 
     # ---- a full conversation turn ----
     def handle_text(self, text: str) -> dict:
@@ -101,6 +116,7 @@ class Assistant:
             self.set_state("idle")
             return {"ok": False, "note": "empty"}
         with self._lock:
+            self.awake_until = time.time() + 15
             self.last_user = text
             self.transcript.append({"role": "user", "text": text, "ts": time.time()})
             self.set_state("thinking")
@@ -115,9 +131,12 @@ class Assistant:
                     "state": "speaking", "source": res.get("source"),
                     "audio": ("/api/say.wav" if self.last_audio else None)}
 
-    def handle_wav(self, wav_path: str) -> dict:
-        """Turn from an uploaded/streamed utterance: STT -> handle_text."""
-        self.set_state("listening")
+    def handle_wav(self, wav_path: str, gate: bool = True) -> dict:
+        """Turn from a streamed utterance: STT -> wake-word gate -> brain.
+
+        Continuous listening: the device streams audio; the SERVER detects the wake word
+        ("hello") on the edge. Ambient speech is ignored until woken; once woken we stay
+        awake ~15 s for follow-ups. `gate=False` bypasses the wake gate (dashboard push-to-talk)."""
         if not self.orc.stt.available:
             self.set_state("idle")
             return {"ok": False, "note": "STT not installed (pip install faster-whisper)"}
@@ -127,14 +146,33 @@ class Assistant:
             self.set_state("idle")
             return {"ok": False, "note": f"STT error: {e}"}
         text = (tr.get("text") or "").strip()
-        # optional wake-word gate for always-on streaming (dashboard push-to-talk bypasses)
-        out = self.handle_text(text) if text else {"ok": False, "note": "no speech"}
-        out["transcript"] = text
-        out["lang"] = tr.get("lang")
-        return out
+        if not text:
+            return {"ok": False, "note": "no speech", "transcript": ""}
 
-    def heard_wake(self, text: str) -> bool:
-        return settings.wake_word.lower() in (text or "").lower()
+        low = text.lower()
+        ww = settings.wake_word.lower()
+        wake = ww in low
+        if gate and not self.awake() and not wake:
+            return {"ok": False, "ignored": True, "transcript": text}   # not addressed — stay dim
+
+        self.set_state("listening")
+        self.awake_until = time.time() + 15
+        cmd = text
+        if wake:
+            idx = low.find(ww)
+            cmd = text[idx + len(ww):].strip(" ,.!?:;-")
+        if not cmd:
+            # bare wake word -> acknowledge, screen wakes
+            with self._lock:
+                self.last_user = text
+                self.transcript.append({"role": "user", "text": text, "ts": time.time()})
+                self.last_reply = "Yes?"; self.tone = "positive"
+                self.transcript.append({"role": "assistant", "text": "Yes?", "ts": time.time()})
+                self._speak("Yes?"); self.set_state("speaking")
+            return {"ok": True, "woke": True, "reply": "Yes?", "transcript": text}
+        out = self.handle_text(cmd)
+        out["transcript"] = text; out["woke"] = wake; out["lang"] = tr.get("lang")
+        return out
 
     def tick(self) -> None:
         """Relax state over time: speaking/thinking -> idle -> sleeping."""

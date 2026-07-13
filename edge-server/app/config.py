@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # ---- Voice home-assistant ----
     assist_enabled: bool = True
-    wake_word: str = "ionity"          # spoken wake word (server-side keyword gate)
+    wake_word: str = "hello"           # spoken wake word (server-side, on the edge) — turns the screen on
     assistant_name: str = "Ionity"
     orb_stream_fps: int = 10           # server->device orb frame rate
     orb_frame_size: int = 150          # px square RGB565 region streamed to the K10

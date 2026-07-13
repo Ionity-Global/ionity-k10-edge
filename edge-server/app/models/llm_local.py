@@ -19,12 +19,28 @@ class LocalLLM:
         except Exception:
             return False
 
+    def prewarm(self) -> None:
+        """Load the model into RAM at boot so the first question answers fast."""
+        try:
+            body = {"model": self.model, "prompt": "hi", "stream": False,
+                    "keep_alive": -1, "options": {"num_predict": 1}}
+            req = urllib.request.Request(f"{self.url}/api/generate",
+                                         data=json.dumps(body).encode(),
+                                         headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=120).read()
+        except Exception:
+            pass
+
     def ask(self, prompt: str, system: str | None = None) -> dict:
         body = {
             "model": self.model,
             "prompt": prompt,
             "system": system or "You are Ionity Edge, a concise local assistant.",
             "stream": False,
+            "keep_alive": -1,            # stay resident — no cold reload between questions
+            # gemma4 "thinks" internally before answering — the budget must cover that,
+            # or the visible reply comes back empty (done_reason: length).
+            "options": {"num_predict": 256, "temperature": 0.6},
         }
         req = urllib.request.Request(
             f"{self.url}/api/generate",

@@ -10,8 +10,14 @@ except Exception:
 
 
 class STT:
-    def __init__(self, model_size: str = "base") -> None:
+    def __init__(self, model_size: str | None = None) -> None:
         self.model = None
+        if model_size is None:
+            try:
+                from app.config import settings
+                model_size = getattr(settings, "stt_model", "base") or "base"
+            except Exception:
+                model_size = "base"
         if _HAVE:
             # Prefer CPU int8 — robust everywhere (GPU path needs CUDA cuBLAS DLLs that
             # aren't always present on Windows and crash at encode time).
@@ -29,6 +35,8 @@ class STT:
     def transcribe(self, wav_path: str) -> dict:
         if not self.available:
             return {"text": "", "lang": None, "note": "STT model not installed"}
-        segments, info = self.model.transcribe(wav_path, vad_filter=True)
+        # beam_size=1 + fixed language: fastest decode for a voice assistant turn
+        segments, info = self.model.transcribe(wav_path, vad_filter=True,
+                                               beam_size=1, language="en")
         text = " ".join(s.text.strip() for s in segments).strip()
         return {"text": text, "lang": info.language, "confidence": info.language_probability}

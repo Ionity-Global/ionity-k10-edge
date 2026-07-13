@@ -1,8 +1,17 @@
-# K10 Firmware (MicroPython demos) — education / tinkering
+# K10 Firmware (MicroPython node) — education / second node
 
-The **easy path** for learning and tinkering. These scripts run on the K10's MicroPython BSP and
-post telemetry to the Edge Brain over simple HTTP. For the real on-device experience use the live
-C++ build in [`../arduino-unihiker`](../arduino-unihiker) (server-computed render over HTTP `/ingest`).
+The **easy path**: a real thin node in ~100 lines. It uploads sensors to the Edge Brain and
+**displays the server-computed render** (orb colour = AI state/tone, label, Claude's words) —
+the same contract as the C++ firmware, minus audio. Load with Thonny or:
+
+```bash
+mpremote connect COMx fs cp -r lib :lib + fs cp boot.py main.py :
+mpremote reset
+```
+
+Set `WIFI_PASS` and `EDGE_HOST` at the top of `main.py` first. For the full voice experience
+(mic, speaker, camera OCR) use the C++ build in [`../arduino-unihiker`](../arduino-unihiker).
+`lib/edge_client.py` also runs under CPython, so you can contract-test it against a live server.
 
 ## Load onto the board
 

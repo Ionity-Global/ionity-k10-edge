@@ -28,10 +28,10 @@ from app.meta import provenance
 from app import orb as orbcfg
 from app.voice.assistant import Assistant
 from app.render import orb_render
-from app import logbuf
+from app import logbuf, store
 
 # ---- user settings overlay (dashboard Settings panel) — persisted, applied at boot ----
-_TUNABLE = ("wake_word", "assistant_name", "ollama_model", "vision_model", "bridge_mode", "idle_sleep_s",
+_TUNABLE = ("wake_word", "assistant_name", "ollama_model", "vision_model", "stt_model", "bridge_mode", "idle_sleep_s",
             "ha_url", "ha_token", "hue_bridge", "chromecast_name", "mqtt_host", "mqtt_port",
             "dispatch_webhook_url", "image_api_url")
 _SETTINGS_PATH = Path(settings.data_dir) / "settings.json"
@@ -55,6 +55,10 @@ geolocator = Geolocator()
 ads = AdEngine()
 gateway = DeviceGateway(orc, recorder, geolocator, telemetry, ads)
 assistant = Assistant(orc, orc.mood)   # voice home-assistant: state machine + turns + tone
+
+# Prewarm the local brain in the background so the FIRST question answers fast.
+import threading as _threading
+_threading.Thread(target=orc.llm.prewarm, daemon=True).start()
 
 # Latest Claude/brain reply — shown on the K10 "readback" segment + spoken by the dashboard (TTS).
 _LAST_SAY = {"text": "", "ts": 0.0}
@@ -127,6 +131,7 @@ def ingest(body: dict = Body(...)):
     did = (body or {}).get("device_id", "mpy")
     tel = body.get("telemetry", {})
     telemetry.ingest(did, tel)
+    store.add_telemetry(did, tel)   # persistent history (sampled)
     # Optional WiFi scan for the moving device -> local BSSID geolocation (no cloud).
     aps = tel.get("aps")
     if aps:
@@ -215,6 +220,7 @@ def chat(body: dict = Body(...)):
     _LAST_SAY["text"] = reply
     _LAST_SAY["ts"] = time.time()
     logbuf.add("chat", f"{text[:60]!r} -> [{turn.get('source')}] {reply[:60]!r}")
+    store.add_event("chat", f"{text[:120]} -> {reply[:200]}")
     return {"reply": reply, "source": turn.get("source"), "tone": turn.get("tone"),
             "state": turn.get("state"), "audio": turn.get("audio")}
 
@@ -381,6 +387,12 @@ def logs():
     return {"logs": logbuf.recent()}
 
 
+# ---------- Persistent history (SQLite) ----------
+@app.get("/api/history")
+def api_history(hours: float = 24, device: str | None = None):
+    return store.history(hours, device)
+
+
 # ---------- Vision: camera image -> Gemma multimodal (OCR + description), OCR fallback ----------
 _LAST_VISION = {"text": "", "ts": 0.0, "backend": ""}
 _OCR_REQ = {"ts": 0.0}   # dashboard "OCR now" -> device grabs a camera frame on its next sync
@@ -395,7 +407,8 @@ def _vision(img: bytes, prompt: str) -> dict:
         req = urllib.request.Request(
             settings.ollama_url.rstrip("/") + "/api/generate",
             data=json.dumps({"model": settings.vision_model, "prompt": prompt,
-                             "images": [base64.b64encode(img).decode()], "stream": False}).encode(),
+                             "images": [base64.b64encode(img).decode()], "stream": False,
+                             "keep_alive": "30m"}).encode(),
             headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=120) as r:
             res = json.loads(r.read())
@@ -406,6 +419,7 @@ def _vision(img: bytes, prompt: str) -> dict:
             assistant._speak(text[:300]); assistant.set_state("speaking")
             _LAST_SAY["text"] = text[:300]; _LAST_SAY["ts"] = time.time()
             logbuf.add("see", "gemma vision ok")
+            store.add_event("vision", text[:300])
             _LAST_VISION.update(text=text, ts=time.time(), backend="gemma-vision")
             return {"ok": True, "backend": "gemma-vision", "text": text,
                     "provenance": provenance.stamp("vision", {"len": len(img)})}

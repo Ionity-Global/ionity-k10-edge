@@ -120,6 +120,10 @@
           <div class="stat"><span>Wake word</span><b id="dWake">—</b></div>
         </div>
       </div>
+      <div style="margin-top:12px">
+        <div style="font-size:10px;color:var(--sub);letter-spacing:1px;margin-bottom:4px">TEMP °C · LAST 24 H (stored)</div>
+        <canvas id="spark" width="420" height="60" style="width:100%;max-width:440px;background:#0a1622;border:1px solid var(--line);border-radius:8px"></canvas>
+      </div>
     </div>
 
     <div class="pane" id="p-settings">
@@ -213,6 +217,24 @@ document.getElementById('ocrNow').onclick=async()=>{
   try{await fetch(BASE+'/api/ocr-now',{method:'POST'});}catch(e){}
   setTimeout(()=>b.textContent='OCR now 📷',4000);};
 
+/* stored-history sparkline (SQLite via /api/history) */
+setInterval(drawSpark,15000);setTimeout(drawSpark,1500);
+async function drawSpark(){
+  if(!document.getElementById('p-device').classList.contains('act'))return;
+  try{
+    const h=await(await fetch(BASE+'/api/history?hours=24')).json();
+    const pts=(h.telemetry||[]).filter(t=>t.temp_c!=null);
+    const cv=document.getElementById('spark'),c=cv.getContext('2d');c.clearRect(0,0,cv.width,cv.height);
+    if(pts.length<2){c.fillStyle='#456';c.font='11px system-ui';c.fillText('collecting history…',10,34);return;}
+    const vs=pts.map(p=>p.temp_c),mn=Math.min(...vs),mx=Math.max(...vs),sp=(mx-mn)||1;
+    c.strokeStyle='#00d2ff';c.lineWidth=1.5;c.beginPath();
+    pts.forEach((p,i)=>{const x=i/(pts.length-1)*(cv.width-8)+4,y=cv.height-6-((p.temp_c-mn)/sp)*(cv.height-14);
+      i?c.lineTo(x,y):c.moveTo(x,y);});
+    c.stroke();
+    c.fillStyle='#7fa6c9';c.font='10px system-ui';
+    c.fillText(mx.toFixed(1),4,10);c.fillText(mn.toFixed(1),4,cv.height-2);
+  }catch(e){}}
+
 async function status(){try{
   const s=await(await fetch(BASE+'/api/status')).json();const m=s.brain?.models||{},br=s.brain?.bridge||{},c=s.brain?.cache||{};
   setPill('pStt',m.stt,m.stt?'stt ready':'stt off');
@@ -282,7 +304,7 @@ document.getElementById('camfile').onchange=async e=>{
   btn.textContent='📷';e.target.value='';};
 
 /* settings */
-const FIELDS=[['wake_word','Wake word'],['assistant_name','Assistant name'],['ollama_model','Local model (Ollama)'],['vision_model','Vision model (camera OCR)'],
+const FIELDS=[['wake_word','Wake word'],['assistant_name','Assistant name'],['ollama_model','Local model (Ollama)'],['vision_model','Vision model (camera OCR)'],['stt_model','STT size (tiny=fastest/base)'],
  ['bridge_mode','Claude bridge (off/http)'],['idle_sleep_s','Sleep after (s)'],
  ['ha_url','Home Assistant URL'],['ha_token','HA token'],['hue_bridge','Hue bridge IP'],
  ['chromecast_name','Chromecast name'],['mqtt_host','MQTT host'],['mqtt_port','MQTT port'],

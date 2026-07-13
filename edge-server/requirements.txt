@@ -12,6 +12,9 @@ websockets>=12.0
 faster-whisper>=1.2            # speech-to-text (Whisper), CPU int8
 piper-tts>=1.4                 # fluent local text-to-speech (download a voice into models/piper)
 
+# ---- MCP server (expose the assistant as tools to Claude / any MCP client) ----
+mcp>=1.0                       # run edge-server/mcp_server.py (see START-MCP.bat)
+
 # ---- Smart-home control (configure the ones you have; all optional at runtime) ----
 homeassistant-api>=6.0         # Home Assistant REST/WS
 aiohttp>=3.9                   # async HTTP (HA / websockets)

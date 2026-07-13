@@ -20,7 +20,8 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-edge-server/models/*        # downloaded model weights (large)
+# downloaded model weights (large) — Piper voices, whisper, etc.
+edge-server/models/*
 !edge-server/models/.gitkeep
 edge-server/data/
 edge-server/recordings/

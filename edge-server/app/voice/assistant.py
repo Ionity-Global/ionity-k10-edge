@@ -40,6 +40,11 @@ class Assistant:
     def __init__(self, orchestrator, mood) -> None:
         self.orc = orchestrator
         self.mood = mood
+        try:
+            from app.home.controller import HomeController
+            self.home = HomeController()
+        except Exception:
+            self.home = None
         self.state = "idle"
         self.level = 0.0          # live audio envelope 0..1 (mic while listening, TTS while speaking)
         self.tone = "neutral"
@@ -120,15 +125,25 @@ class Assistant:
             self.last_user = text
             self.transcript.append({"role": "user", "text": text, "ts": time.time()})
             self.set_state("thinking")
-            res = self.orc.ask(text)
-            reply = (res.get("text") or "").strip() or "…"
+            # 1) smart-home intent (lights/media/scenes/MQTT) — act locally before the LLM
+            source = "home"
+            reply = ""
+            if self.home is not None:
+                act = self.home.parse_and_act(text)
+                if act.get("handled"):
+                    reply = act.get("spoken", "")
+            # 2) otherwise ask the brain (Claude bridge -> gemma4:e2b)
+            if not reply:
+                res = self.orc.ask(text)
+                reply = (res.get("text") or "").strip() or "…"
+                source = res.get("source")
             self.last_reply = reply
             self.tone = self._tone_of(reply)
             self.transcript.append({"role": "assistant", "text": reply, "ts": time.time()})
             self._speak(reply)
             self.set_state("speaking")
             return {"ok": True, "user": text, "reply": reply, "tone": self.tone,
-                    "state": "speaking", "source": res.get("source"),
+                    "state": "speaking", "source": source,
                     "audio": ("/api/say.wav" if self.last_audio else None)}
 
     def handle_wav(self, wav_path: str, gate: bool = True) -> dict:
@@ -150,8 +165,13 @@ class Assistant:
             return {"ok": False, "note": "no speech", "transcript": ""}
 
         low = text.lower()
-        ww = settings.wake_word.lower()
-        wake = ww in low
+        # Whisper spells the wake word many ways — accept the near-homophones.
+        variants = [settings.wake_word.lower(), "peper", "pepper", "pepe", "pepa", "peppa"]
+        wake, widx, wlen = False, -1, 0
+        for v in variants:
+            j = low.find(v)
+            if j >= 0:
+                wake, widx, wlen = True, j, len(v); break
         if gate and not self.awake() and not wake:
             return {"ok": False, "ignored": True, "transcript": text}   # not addressed — stay dim
 
@@ -159,8 +179,7 @@ class Assistant:
         self.awake_until = time.time() + 15
         cmd = text
         if wake:
-            idx = low.find(ww)
-            cmd = text[idx + len(ww):].strip(" ,.!?:;-")
+            cmd = text[widx + wlen:].strip(" ,.!?:;-")
         if not cmd:
             # bare wake word -> acknowledge, screen wakes
             with self._lock:

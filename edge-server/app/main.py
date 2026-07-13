@@ -287,30 +287,33 @@ def screen_565():
                              "X-Audio-Seq": str(s.get("audio_seq", 0))})
 
 
-# ---------- Dispatch / home-assistance hook ----------
+# ---------- Smart-home control (Home Assistant / Hue / Cast / MQTT) ----------
+@app.get("/api/home")
+def home_status():
+    return assistant.home.status() if assistant.home else {"enabled": False}
+
+
 @app.post("/api/dispatch")
 def dispatch(body: dict = Body(...)):
-    cmd = ((body or {}).get("command") or "").strip().lower()
-    device = (body or {}).get("device", "ionity-k10")
-    known = {"lights on": "LIGHTS_ON", "lights off": "LIGHTS_OFF",
-             "record": "RECORD", "stop": "STOP", "locate": "GEO", "read": "TTS"}
-    action = known.get(cmd, "UNKNOWN")
-    st = (telemetry.get(device) or {}).get("state") or {}
-    result = {"command": cmd, "action": action, "device": device}
-    url = settings.dispatch_webhook_url
-    if not url:
-        result.update({"configured": False,
-                       "note": "Set DISPATCH_WEBHOOK_URL (e.g. a Home Assistant webhook) to forward commands."})
-        return result
-    try:
-        data = json.dumps({"command": cmd, "action": action, "device": device, "state": st}).encode()
-        req = urllib.request.Request(url, data=data,
-                                     headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=4) as r:
-            result.update({"configured": True, "forwarded": True, "status": getattr(r, "status", 200)})
-    except Exception as e:
-        result.update({"configured": True, "forwarded": False, "error": str(e)})
-    return result
+    """Actuate a spoken/typed home command via the configured backends."""
+    cmd = ((body or {}).get("command") or "").strip()
+    if not cmd:
+        return {"handled": False, "note": "no command"}
+    if assistant.home is None:
+        return {"handled": False, "note": "home control unavailable"}
+    res = assistant.home.parse_and_act(cmd)
+    res["backends"] = assistant.home.status()
+    # optional extra webhook fan-out (kept for compatibility)
+    if settings.dispatch_webhook_url:
+        try:
+            data = json.dumps({"command": cmd}).encode()
+            req = urllib.request.Request(settings.dispatch_webhook_url, data=data,
+                                         headers={"Content-Type": "application/json"}, method="POST")
+            urllib.request.urlopen(req, timeout=4)
+            res["webhook"] = "sent"
+        except Exception as e:
+            res["webhook"] = f"failed: {e}"
+    return res
 
 
 # ---------- Image generation (local model relay, else a real procedural SVG) ----------

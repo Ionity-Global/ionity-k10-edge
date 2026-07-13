@@ -29,12 +29,20 @@ class Settings(BaseSettings):
 
     # ---- Voice home-assistant ----
     assist_enabled: bool = True
-    wake_word: str = "hello"           # spoken wake word (server-side, on the edge) — turns the screen on
+    wake_word: str = "peper"           # spoken wake word (server-side, on the edge) — turns the screen on & listens
     assistant_name: str = "Ionity"
     orb_stream_fps: int = 10           # server->device orb frame rate
     orb_frame_size: int = 150          # px square RGB565 region streamed to the K10
     idle_sleep_s: float = 30.0         # go to SLEEPING after this much silence
     tts_voice: str = ""                # path to a Piper .onnx voice (else browser/edge TTS)
+
+    # ---- Smart home (all optional — configure what you actually have; everything degrades gracefully) ----
+    ha_url: str = ""                   # Home Assistant base URL, e.g. http://homeassistant.local:8123
+    ha_token: str = ""                 # HA long-lived access token
+    hue_bridge: str = ""               # Philips Hue bridge IP (press the bridge button on first use)
+    chromecast_name: str = ""          # default Google Cast / Android TV device name
+    mqtt_host: str = ""                # MQTT broker host (for ESP32/IoT sensors & devices)
+    mqtt_port: int = 1883
 
     # Optional local integrations (all off by default — LOCAL SAVED, no cloud):
     dispatch_webhook_url: str = ""     # e.g. a Home Assistant webhook; /api/dispatch forwards commands here

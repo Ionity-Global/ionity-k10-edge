@@ -4,8 +4,21 @@ uvicorn[standard]>=0.30
 pydantic>=2.7
 pydantic-settings>=2.3
 numpy>=1.26
+Pillow>=10.3                    # server-side screen/orb rendering
 python-multipart>=0.0.9
 websockets>=12.0
+
+# ---- Voice pipeline (Home-Assistant style: STT + fluent TTS, on the edge) ----
+faster-whisper>=1.2            # speech-to-text (Whisper), CPU int8
+piper-tts>=1.4                 # fluent local text-to-speech (download a voice into models/piper)
+
+# ---- Smart-home control (configure the ones you have; all optional at runtime) ----
+homeassistant-api>=6.0         # Home Assistant REST/WS
+aiohttp>=3.9                   # async HTTP (HA / websockets)
+pychromecast>=14.0             # Google Cast / Android TV / smart displays
+phue>=1.1                      # Philips Hue lights
+aiohue>=4.8                    # Hue (async)
+paho-mqtt>=2.0                 # MQTT for ESP32 / IoT sensors
 
 # ---- Optional model backends (install when you want real inference) ----
 # Uncomment / install via scripts/setup with EDGE_INSTALL_MODELS=1

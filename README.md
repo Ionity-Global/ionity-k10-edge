@@ -40,23 +40,29 @@ big machine's resources over WiFi, so it can do far more than 512 KB of SRAM eve
 - 🔔 **Smart Notify + Ads module** — on-device notices and an opt-in, brand-safe ad surface.
 - 🪪 **Metadata & provenance** — every capture is stamped with AEDI / Policy 986 provenance.
 
-## 3. Quick start (three commands)
+## 3. Run it (one command)
 
-```bash
-# 1) Bring up the Edge Brain (your PC) — pulls local models on first run
-cd edge-server && ./scripts/setup.sh        # Windows: .\scripts\setup.ps1
-python -m app.main
+A fresh clone is *source only* — the fluent voice model, the launcher `.exe`, Python deps and
+your WiFi `secrets.h` are intentionally **not** in git. `INSTALL.ps1` fetches/builds them:
 
-# 2) Open the Installer (flash + configure the K10 from your browser)
-cd installer && npm install && npm run dev   # then open http://localhost:5173
-
-# 3) Flash the board (or use the Installer's one-click WebSerial flasher)
-cd flasher && ./flash.sh                      # Windows: .\flash.ps1
+```powershell
+# Windows PowerShell, from the repo root:
+powershell -ExecutionPolicy Bypass -File INSTALL.ps1
+#   ...installs deps, downloads the Piper voice, builds IonityAssistant.exe.
+#   add  -Flash  to also write secrets.h and flash the K10.
 ```
 
-The Installer walks you through **WiFi provisioning** (SSID `Antwerp Ionity`), pairing the board
-to the Edge Brain, and turning features on/off. WiFi credentials are written to the board's secure
-NVS store by the Installer — **never committed to this public repo**.
+Then start the whole assistant with **one double-click**:
+
+```
+edge-server\IonityAssistant.exe      # starts Ollama + Edge Brain + opens the dashboard
+```
+
+Open **http://localhost:8765/** and say **“Peper …”**. Everything (Whisper STT, Piper TTS,
+the brain, and screen rendering) runs on this machine; the K10 only streams its mic in and
+plays/display what the server sends, over WiFi `Antwerp Ionity`. For a local brain:
+`ollama pull gemma4:e2b`. For Claude answers: run `bridge\claude-web\START-BRIDGE.bat` once
+and sign in with Google.
 
 ## 4. Repository layout
 

@@ -107,6 +107,14 @@
           <img id="mini" src="/api/screen.png" alt="ESP live"/>
           <div class="cap">LIVE · K10 screen (server-rendered stream)</div>
         </div>
+        <div class="bezel" style="min-width:220px">
+          <div style="font-size:10px;color:var(--sub);letter-spacing:1px;margin-bottom:6px">MIC INPUT (speak at the device)</div>
+          <div style="height:18px;background:#0c1826;border-radius:9px;overflow:hidden">
+            <div id="micbar" style="height:100%;width:0;background:linear-gradient(90deg,#26de81,#f7b731,#e23b4e);transition:.1s"></div>
+          </div>
+          <div id="micinfo" style="font-size:11px;color:var(--sub);margin-top:6px">rms — · idle ≈75 · talking &gt;150</div>
+          <div id="micheard" style="font-size:12px;color:var(--cyan);margin-top:4px">heard: —</div>
+        </div>
         <div class="bezel">
           <img id="camimg" src="/api/cam.jpg" alt="camera" style="height:150px;object-fit:cover"
                onerror="this.style.opacity=.15"/>
@@ -230,6 +238,18 @@ setInterval(async()=>{
     document.getElementById('visText').textContent=v.text?`[${v.backend}] ${v.text}`:'(no OCR yet — press A on the K10 or OCR now)';
   }catch(e){}
 },800);
+/* live mic meter — proves whether the device hears your voice */
+setInterval(async()=>{
+  if(!document.getElementById('p-device').classList.contains('act'))return;
+  try{
+    const m=await(await fetch(BASE+'/api/mic')).json();
+    const rms=m.rms||0, pct=Math.min(100,Math.round(rms/1500*100));
+    document.getElementById('micbar').style.width=pct+'%';
+    document.getElementById('micinfo').textContent=`rms ${rms} ${m.fresh?'':'(stale)'} · idle ≈75 · talking >150`;
+    if(m.heard)document.getElementById('micheard').textContent='heard: '+m.heard;
+  }catch(e){}
+},400);
+
 document.getElementById('ocrNow').onclick=async()=>{
   const b=document.getElementById('ocrNow');b.textContent='capturing…';
   try{await fetch(BASE+'/api/ocr-now',{method:'POST'});}catch(e){}

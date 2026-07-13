@@ -288,7 +288,8 @@ async def voice_raw(request: Request):
         a = L if _rms(L) >= _rms(R) else R          # the mic lives on one channel
         a = a - a.mean()                             # remove DC offset
         rms0 = _rms(a); ac = _ac1(a)
-        if rms0 < 6:                                 # true silence — skip the STT pass
+        _MIC_LIVE.update(rms=int(rms0), ac=round(ac, 2), ts=time.time())   # live meter for the dashboard
+        if rms0 < 4:                                 # true silence — skip the STT pass
             print(f"[mic] silence rms={rms0:.0f}", flush=True)
             return {"ok": False, "note": "silence", "transcript": ""}
         # 1) HIGH-PASS ~90 Hz: kill DC drift + low rumble (vectorised, fast)
@@ -306,7 +307,7 @@ async def voice_raw(request: Request):
             pass
         # 3) AGC: the K10 mic is very quiet (peak ~2% FS) -> normalise to a healthy target RMS
         rms1 = _rms(a) or 1.0
-        gain = max(1.0, min(60.0, 3200.0 / rms1))    # e.g. rms 110 -> ~29x
+        gain = max(1.0, min(120.0, 3500.0 / rms1))   # very quiet K10 mic -> up to 120x; Whisper VAD guards false wakes
         a = a * gain
         mono = _np.clip(a, -32768, 32767).astype("<i2").tobytes()
         rms = int(_rms(a))
@@ -503,6 +504,7 @@ def service_worker():
 # ---------- Vision: camera image -> Gemma multimodal (OCR + description), OCR fallback ----------
 _LAST_VISION = {"text": "", "ts": 0.0, "backend": ""}
 _OCR_REQ = {"ts": 0.0}   # dashboard "OCR now" -> device grabs a camera frame on its next sync
+_MIC_LIVE = {"rms": 0, "ac": 0.0, "ts": 0.0}   # live mic input level (for the dashboard meter)
 
 
 def _vision(img: bytes, prompt: str) -> dict:
@@ -551,6 +553,20 @@ def cam_jpg():
         return FileResponse(str(p), media_type="image/jpeg",
                             headers={"Cache-Control": "no-store"})
     return JSONResponse({"note": "no camera frame yet — press [A] on the K10 or click OCR now"}, status_code=404)
+
+
+@app.get("/api/mic")
+def mic_live():
+    """Live mic input level from the device's last upload (for the dashboard meter).
+    rms>~150 while you talk = the mic hears you; ~75 idle = ambient/too quiet."""
+    return {**_MIC_LIVE, "fresh": (time.time() - _MIC_LIVE["ts"]) < 6, "heard": _last_heard()}
+
+
+def _last_heard() -> str:
+    for m in reversed(assistant.transcript):
+        if m.get("role") == "user":
+            return m.get("text", "")
+    return ""
 
 
 @app.get("/api/vision")

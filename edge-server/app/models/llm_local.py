@@ -38,8 +38,7 @@ class LocalLLM:
             "system": system or "You are Ionity Edge, a concise local assistant.",
             "stream": False,
             "keep_alive": -1,            # stay resident — no cold reload between questions
-            # gemma4 "thinks" internally before answering — the budget must cover that,
-            # or the visible reply comes back empty (done_reason: length).
+            "think": False,              # skip gemma4's hidden reasoning -> ~0.8s instead of ~4-7s
             "options": {"num_predict": 256, "temperature": 0.6},
         }
         req = urllib.request.Request(

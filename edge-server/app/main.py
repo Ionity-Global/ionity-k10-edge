@@ -31,7 +31,8 @@ from app.render import orb_render
 from app import logbuf, store
 
 # ---- user settings overlay (dashboard Settings panel) — persisted, applied at boot ----
-_TUNABLE = ("wake_word", "assistant_name", "ollama_model", "vision_model", "stt_model", "bridge_mode", "idle_sleep_s",
+_TUNABLE = ("wake_word", "wake_words", "assistant_name", "ollama_model", "vision_model", "stt_model",
+            "bridge_mode", "idle_sleep_s", "temp_alert_c",
             "ha_url", "ha_token", "hue_bridge", "chromecast_name", "mqtt_host", "mqtt_port",
             "dispatch_webhook_url", "image_api_url")
 _SETTINGS_PATH = Path(settings.data_dir) / "settings.json"
@@ -55,6 +56,8 @@ geolocator = Geolocator()
 ads = AdEngine()
 gateway = DeviceGateway(orc, recorder, geolocator, telemetry, ads)
 assistant = Assistant(orc, orc.mood)   # voice home-assistant: state machine + turns + tone
+assistant.telemetry = telemetry        # instant sensor answers ("what's the temperature?")
+_TEMP_ALERT = {"ts": 0.0}
 
 # Prewarm the local brain in the background so the FIRST question answers fast.
 import threading as _threading
@@ -152,6 +155,22 @@ def ingest(body: dict = Body(...)):
     state["ai_state"] = a["state"]
     state["audio_seq"] = a.get("audio_seq", 0)   # device plays say.wav when this bumps
     state["ocr_req"] = 1 if (time.time() - _OCR_REQ["ts"] < 6) else 0   # dashboard OCR trigger
+    # TEMPERATURE INDICATION: hot room -> orb tints orange->red while idle, and Peper
+    # speaks an alert (at most once per 10 min).
+    try:
+        t = float(tel.get("temp_c") or 0)
+        if t >= settings.temp_alert_c:
+            frac = min(1.0, (t - settings.temp_alert_c) / 8.0)
+            state["temp_hot"] = 1
+            if a["state"] in ("idle", "sleeping"):
+                state["color"] = orbcfg._lerp("FF8C00", "FF2D00", frac)   # orange -> red
+                state["label"] = f"HOT {t:.0f}C"
+            if time.time() - _TEMP_ALERT["ts"] > 600:
+                _TEMP_ALERT["ts"] = time.time()
+                assistant.handle_text(f"Alert: the room temperature is {t:.0f} degrees.")
+                logbuf.add("alert", f"temperature {t:.1f}C >= {settings.temp_alert_c}C")
+    except Exception:
+        pass
     if a.get("reply"):
         state["say"] = a["reply"][:96]           # Claude's words on the device
     elif _LAST_SAY["text"] and (time.time() - _LAST_SAY["ts"] < 25):
@@ -251,24 +270,32 @@ async def voice_raw(request: Request):
     except Exception:
         pass
     raw = data[44:] if len(data) > 44 else data
-    raw = raw[: len(raw) // 2 * 2]
+    raw = raw[: len(raw) // 4 * 4]
     rms = 0
     mono = raw
     try:
         import numpy as _np
-        def _rms(x): return int(_np.sqrt(_np.mean(x.astype(_np.float32) ** 2))) if x.size else 0
+        # The ESP32 I2S gives native little-endian int16 stereo. Do NOT guess byte order by
+        # loudness — byte-swapped speech looks like LOUD white noise and always "wins",
+        # which fed Whisper garbage. Verify LE with lag-1 autocorrelation (speech is smooth).
         le = _np.frombuffer(raw, dtype="<i2")
-        be = _np.frombuffer(raw, dtype=">i2").astype(_np.int16)
-        # try both byte orders and both stereo channels; the real mic signal is the loudest
-        cands = {"LE_L": le[0::2], "LE_R": le[1::2], "BE_L": be[0::2], "BE_R": be[1::2]}
-        best = max(cands.items(), key=lambda kv: _rms(kv[1]))
-        rmses = {k: _rms(v) for k, v in cands.items()}
-        a = best[1].astype(_np.float32)
-        rms = _rms(best[1])
-        if 3 < rms < 3000:                       # normalise quiet mic toward a healthy STT level
-            a = _np.clip(a * min(30.0, 2500.0 / max(rms, 1)), -32768, 32767)
-        mono = a.astype("<i2").tobytes()
-        print(f"[mic-analyze] chan={best[0]} rmses={rmses}", flush=True)
+        L, R = le[0::2].astype(_np.float32), le[1::2].astype(_np.float32)
+        def _rms(x): return float(_np.sqrt(_np.mean(x ** 2))) if x.size else 0.0
+        def _ac1(x):
+            if x.size < 3: return 0.0
+            x = x - x.mean(); d = float(_np.dot(x, x))
+            return float(_np.dot(x[:-1], x[1:]) / d) if d else 0.0
+        a = L if _rms(L) >= _rms(R) else R          # the mic lives on one channel
+        a -= a.mean()                                # remove DC offset
+        rms = int(_rms(a)); ac = _ac1(a)
+        peak = float(_np.abs(a).max()) if a.size else 0.0
+        if rms < 25:                                 # silence — don't waste an STT pass
+            print(f"[mic] silence rms={rms}", flush=True)
+            return {"ok": False, "note": "silence", "transcript": ""}
+        if peak > 0:                                 # gentle normalise to ~60% FS (no clipping)
+            a = a * min(6.0, 0.6 * 32767.0 / peak)
+        mono = _np.clip(a, -32768, 32767).astype("<i2").tobytes()
+        print(f"[mic] rms={rms} ac1={ac:.2f} peak={int(peak)}", flush=True)
     except Exception as e:
         print("[mic-analyze] err", e, flush=True)
     path = str(Path(settings.data_dir) / "last_device.wav")
@@ -391,6 +418,69 @@ def logs():
 @app.get("/api/history")
 def api_history(hours: float = 24, device: str | None = None):
     return store.history(hours, device)
+
+
+# ---------- AiD Sigil: a scannable identity/context card (from the AiD design doc) ----------
+@app.get("/api/sigil.png")
+def sigil():
+    """A brand 'Sigil' — QR to the public repo over an Ionity-blue generative-art tile,
+    with provenance in PNG metadata. The dashboard's portable identity artifact."""
+    from fastapi.responses import Response
+    import io, hashlib
+    try:
+        import qrcode
+        from PIL import Image, ImageDraw
+        from PIL.PngImagePlugin import PngInfo
+        payload = "https://github.com/Ionity-Global/ionity-k10-edge"
+        qr = qrcode.QRCode(border=2, box_size=8)
+        qr.add_data(payload); qr.make(fit=True)
+        qimg = qr.make_image(fill_color="#0b2036", back_color="#eaf6ff").convert("RGB")
+        W = 420; card = Image.new("RGB", (W, W + 60), (5, 11, 20))
+        d = ImageDraw.Draw(card)
+        seed = int(hashlib.sha256(payload.encode()).hexdigest(), 16)
+        for i in range(160):                              # deterministic generative-art field
+            x = (seed >> (i % 32)) % W; y = (seed >> ((i * 3) % 40)) % (W + 60)
+            r = 6 + (seed >> i) % 26
+            c = [(0, 180, 216), (46, 125, 225), (0, 210, 255)][i % 3]
+            d.ellipse([x - r, y - r, x + r, y + r], outline=c)
+        q = qimg.resize((300, 300)); card.paste(q, ((W - 300) // 2, 40))
+        d.text((W // 2 - 30, 12), "IONITY · AiD", fill=(0, 210, 255))
+        d.text((16, W + 40), "Policy 986 AED · scan to pull the public brain", fill=(70, 100, 120))
+        meta = PngInfo()
+        meta.add_text("Author", "Johan Wilhelm van Antwerp")
+        meta.add_text("Entity", "Ionity (Pty) Ltd (AEDI)")
+        meta.add_text("Policy", "986 AED"); meta.add_text("Payload", payload)
+        buf = io.BytesIO(); card.save(buf, "PNG", pnginfo=meta)
+        return Response(content=buf.getvalue(), media_type="image/png")
+    except Exception as e:
+        return JSONResponse({"error": str(e), "note": "pip install qrcode Pillow"}, status_code=500)
+
+
+# ---------- Installable app (PWA): manifest + service worker ----------
+@app.get("/api/manifest.webmanifest")
+def manifest():
+    return JSONResponse({
+        "name": "Ionity Home Assistant", "short_name": "Ionity",
+        "description": "Peper — the Ionity edge voice home assistant. Policy 986 AED.",
+        "start_url": "/", "display": "standalone",
+        "background_color": "#050b14", "theme_color": "#050b14",
+        "icons": [{"src": "/web/ionity-logo.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}],
+    }, media_type="application/manifest+json")
+
+
+@app.get("/api/sw.js")
+def service_worker():
+    from fastapi.responses import Response
+    sw = (
+        "const C='ionity-v1';"
+        "self.addEventListener('install',e=>{self.skipWaiting();});"
+        "self.addEventListener('activate',e=>{self.clients.claim();});"
+        "self.addEventListener('fetch',e=>{const u=new URL(e.request.url);"
+        "if(u.pathname==='/'||u.pathname.startsWith('/web/')){"
+        "e.respondWith(fetch(e.request).then(r=>{const c=r.clone();caches.open(C).then(x=>x.put(e.request,c));return r})"
+        ".catch(()=>caches.match(e.request)));}});"
+    )
+    return Response(content=sw, media_type="application/javascript")
 
 
 # ---------- Vision: camera image -> Gemma multimodal (OCR + description), OCR fallback ----------

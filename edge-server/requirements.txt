@@ -14,6 +14,7 @@ piper-tts>=1.4                 # fluent local text-to-speech (download a voice i
 
 # ---- MCP server (expose the assistant as tools to Claude / any MCP client) ----
 mcp>=1.0                       # run edge-server/mcp_server.py (see START-MCP.bat)
+qrcode>=7.4                    # AiD Sigil (scannable identity card) on the dashboard
 
 # ---- Smart-home control (configure the ones you have; all optional at runtime) ----
 homeassistant-api>=6.0         # Home Assistant REST/WS

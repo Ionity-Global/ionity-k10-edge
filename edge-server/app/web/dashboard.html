@@ -4,6 +4,11 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <link rel="icon" href="/web/favicon.ico" />
+<link rel="manifest" href="/api/manifest.webmanifest" />
+<meta name="theme-color" content="#050b14" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Ionity" />
+<link rel="apple-touch-icon" href="/web/ionity-logo.svg" />
 <title>Ionity · Home Assistant</title>
 <style>
   :root{--bg:#050b14;--panel:#0e1c2b;--line:#17324a;--cyan:#00d2ff;--ink:#eaf6ff;--sub:#7fa6c9;--accent:#e94560;--ok:#26de81;--warn:#f7b731}
@@ -62,6 +67,7 @@
   <img src="/web/ionity-logo.svg" alt="Ionity" onerror="this.style.display='none'"/>
   <div class="t">IONITY <small>Home Assistant · Edge</small></div>
   <div class="grow"></div>
+  <button class="pill" id="installBtn" style="display:none;cursor:pointer;background:var(--cyan);color:#04141c;border:none;font-weight:700">⬇ Install app</button>
   <span class="pill" id="pBrain">brain …</span>
   <span class="pill" id="pStt">stt …</span>
   <span class="pill" id="pBridge">claude …</span>
@@ -124,6 +130,10 @@
         <div style="font-size:10px;color:var(--sub);letter-spacing:1px;margin-bottom:4px">TEMP °C · LAST 24 H (stored)</div>
         <canvas id="spark" width="420" height="60" style="width:100%;max-width:440px;background:#0a1622;border:1px solid var(--line);border-radius:8px"></canvas>
       </div>
+      <div style="margin-top:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <img src="/api/sigil.png" alt="AiD Sigil" style="height:150px;border-radius:10px;border:1px solid var(--line)"/>
+        <div style="font-size:11px;color:var(--sub);max-width:200px">AiD Sigil — scan to pull the public brain (this repo). Generative-art + QR + provenance, per the AiD design doc.</div>
+      </div>
     </div>
 
     <div class="pane" id="p-settings">
@@ -139,6 +149,13 @@
 <script>
 const BASE = location.origin;
 const STATE_LABELS = {sleeping:"SLEEPING",idle:"IDLE",listening:"LISTENING",thinking:"THINKING",speaking:"SPEAKING"};
+
+/* ---- installable app (PWA) ---- */
+if('serviceWorker' in navigator){navigator.serviceWorker.register('/api/sw.js').catch(()=>{});}
+let deferredPrompt=null;
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredPrompt=e;
+  const b=document.getElementById('installBtn');b.style.display='inline-block';
+  b.onclick=async()=>{b.style.display='none';deferredPrompt.prompt();await deferredPrompt.userChoice;deferredPrompt=null;};});
 
 /* tabs */
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{
@@ -304,7 +321,7 @@ document.getElementById('camfile').onchange=async e=>{
   btn.textContent='📷';e.target.value='';};
 
 /* settings */
-const FIELDS=[['wake_word','Wake word'],['assistant_name','Assistant name'],['ollama_model','Local model (Ollama)'],['vision_model','Vision model (camera OCR)'],['stt_model','STT size (tiny=fastest/base)'],
+const FIELDS=[['wake_word','Wake word'],['wake_words','Wake words (CSV: hi pepper,…)'],['assistant_name','Assistant name'],['ollama_model','Local model (Ollama)'],['vision_model','Vision model (camera OCR)'],['stt_model','STT size (tiny=fastest/base)'],['temp_alert_c','Hot alert °C'],
  ['bridge_mode','Claude bridge (off/http)'],['idle_sleep_s','Sleep after (s)'],
  ['ha_url','Home Assistant URL'],['ha_token','HA token'],['hue_bridge','Hue bridge IP'],
  ['chromecast_name','Chromecast name'],['mqtt_host','MQTT host'],['mqtt_port','MQTT port'],

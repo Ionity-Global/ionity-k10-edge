@@ -40,6 +40,7 @@ class Assistant:
     def __init__(self, orchestrator, mood) -> None:
         self.orc = orchestrator
         self.mood = mood
+        self.telemetry = None            # wired by main.py — enables instant sensor answers
         try:
             from app.home.controller import HomeController
             self.home = HomeController()
@@ -56,6 +57,32 @@ class Assistant:
         self.awake_until = 0.0                 # stays awake for follow-ups after a wake/interaction
         self.transcript: list[dict] = []      # [{role, text, ts}]
         self._lock = threading.Lock()
+
+    def _sensor_answer(self, text: str) -> str | None:
+        """Answer sensor questions INSTANTLY from live telemetry (no LLM round-trip)."""
+        if self.telemetry is None:
+            return None
+        low = text.lower()
+        want_t = any(w in low for w in ("temperature", "temp", "hot", "warm", "cold", "degrees"))
+        want_h = "humid" in low
+        want_l = any(w in low for w in ("light", "bright", "dark"))
+        if not (want_t or want_h or want_l):
+            return None
+        try:
+            devs = list(self.telemetry.latest.keys())
+            l = self.telemetry.latest.get("ionity-k10") or (self.telemetry.latest.get(devs[0]) if devs else {})
+        except Exception:
+            return None
+        if not l:
+            return None
+        parts = []
+        if want_t and l.get("temp_c") is not None:
+            parts.append(f"it's {float(l['temp_c']):.1f} degrees")
+        if want_h and l.get("humidity") is not None:
+            parts.append(f"humidity is {float(l['humidity']):.0f} percent")
+        if want_l and l.get("light") is not None:
+            parts.append(f"light level is {int(l['light'])}")
+        return ("Right now " + " and ".join(parts) + ".") if parts else None
 
     # ---- state helpers ----
     def set_state(self, s: str) -> None:
@@ -139,7 +166,12 @@ class Assistant:
                     reply = ack
             except Exception:
                 pass
-            # 2) smart-home intent (lights/media/scenes/MQTT) — act locally before the LLM
+            # 2) live sensor question -> INSTANT answer from telemetry (no LLM)
+            if not reply:
+                sa = self._sensor_answer(text)
+                if sa:
+                    source = "sensors"; reply = sa
+            # 3) smart-home intent (lights/media/scenes/MQTT) — act locally before the LLM
             if not reply and self.home is not None:
                 source = "home"
                 act = self.home.parse_and_act(text)
@@ -187,8 +219,11 @@ class Assistant:
                 return {"ok": False, "ignored": True, "echo": True, "transcript": text}
 
         low = text.lower()
-        # Whisper spells the wake word many ways — accept the near-homophones.
-        variants = [settings.wake_word.lower(), "peper", "pepper", "pepe", "pepa", "peppa"]
+        # Custom wake words (Settings -> wake_words CSV, e.g. "hi pepper"), longest match first
+        # so "hi pepper" wins over "pepper". Learnable: accepted clips are archived for training.
+        variants = [w.strip().lower() for w in
+                    (settings.wake_words or settings.wake_word).split(",") if w.strip()]
+        variants = sorted(set(variants + [settings.wake_word.lower()]), key=len, reverse=True)
         wake, widx, wlen = False, -1, 0
         for v in variants:
             j = low.find(v)
@@ -202,6 +237,18 @@ class Assistant:
         cmd = text
         if wake:
             cmd = text[widx + wlen:].strip(" ,.!?:;-")
+            # voice learning: archive the accepted wake clip (data/voice_samples) so the
+            # wake model can be trained/tuned on YOUR voice over time
+            try:
+                import shutil
+                vs = Path(settings.data_dir) / "voice_samples"
+                vs.mkdir(exist_ok=True)
+                shutil.copy(wav_path, vs / f"wake_{int(time.time())}.wav")
+                olds = sorted(vs.glob("wake_*.wav"))
+                for f in olds[:-50]:
+                    f.unlink()                       # keep the newest 50 samples
+            except Exception:
+                pass
         if not cmd:
             # bare wake word -> acknowledge, screen wakes
             with self._lock:

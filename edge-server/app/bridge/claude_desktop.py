@@ -31,13 +31,16 @@ class ClaudeBridge:
     def available(self) -> bool:
         if not self.enabled:
             return False
+        # Only report available if the relay's PORT is actually open — otherwise every
+        # answer wasted ~6 s trying a dead bridge before falling back to the local model.
+        import socket
+        from urllib.parse import urlparse
         try:
-            req = urllib.request.Request(self.url, method="OPTIONS")
-            urllib.request.urlopen(req, timeout=1.0)
-            return True
+            u = urlparse(self.url)
+            with socket.create_connection((u.hostname or "127.0.0.1", u.port or 80), timeout=0.4):
+                return True
         except Exception:
-            # Some relays don't implement OPTIONS; treat as maybe-available.
-            return True
+            return False
 
     def ask(self, prompt: str, context: dict | None = None) -> dict:
         if not self.enabled:

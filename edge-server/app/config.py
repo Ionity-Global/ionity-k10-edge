@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "gemma4:e2b"   # local brain via Ollama (installed); fallback below gemma4:e4b
     vision_model: str = "gemma3:4b"    # multimodal model for camera OCR/vision (reads text reliably)
-    stt_model: str = "base"            # whisper size: tiny (fastest) | base (default) | small
+    stt_model: str = "tiny"            # whisper size: tiny (fastest, default) | base | small
 
     bridge_mode: str = "http"          # off | http  — primary brain = Claude via the web bridge
     bridge_url: str = "http://127.0.0.1:8799/ask"
@@ -31,7 +31,9 @@ class Settings(BaseSettings):
 
     # ---- Voice home-assistant ----
     assist_enabled: bool = True
-    wake_word: str = "peper"           # spoken wake word (server-side, on the edge) — turns the screen on & listens
+    wake_word: str = "peper"           # primary wake word (server-side, on the edge)
+    wake_words: str = "peper,pepper,hi pepper,hey pepper,hi peper,peppa,pepa"  # custom wake words (CSV, learnable)
+    temp_alert_c: float = 38.0         # speak + tint orange when the room passes this temperature
     assistant_name: str = "Ionity"
     orb_stream_fps: int = 10           # server->device orb frame rate
     orb_frame_size: int = 150          # px square RGB565 region streamed to the K10

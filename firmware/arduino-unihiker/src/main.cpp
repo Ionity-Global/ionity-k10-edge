@@ -222,9 +222,16 @@ void loop() {
     }
     esp_camera_fb_return(fb);
   }
-  if (k10.buttonA && k10.buttonA->isPressed() && !gOCRPending) gDoOCR = true;
+  // Button A or B = instant CAMERA OCR (read what's in front of me), fast + visible
+  if (((k10.buttonA && k10.buttonA->isPressed()) || (k10.buttonB && k10.buttonB->isPressed())) && !gOCRPending)
+    gDoOCR = true;
 
   float vl = gVoice; uint32_t orb = gOrb;
+  // ORANGE FLASH when voice is heard (local RMS spike) — instant visual "I heard you"
+  static uint32_t flashUntil = 0;
+  if (vl > 0.22f) flashUntil = millis() + 220;
+  bool voiceFlash = millis() < flashUntil;
+  if (voiceFlash) orb = 0xFF7A00;   // orange
   static float ph = 0; ph += 0.22f; float breathe = 0.5f + 0.5f*sinf(ph);
   int r = (int)gRadius + (int)(vl*34) + (int)(breathe*6);           // pulse reacts to your voice
   k10.canvas->canvasRectangle(0,0,SW,SH,BG,BG,true);
@@ -246,7 +253,7 @@ void loop() {
   k10.canvas->canvasRectangle(52,234,mw,10,0x00D2FF,0x00D2FF,true);
   // what the server HEARD (proves mic -> WiFi -> STT)
   if (gOCRPending) { k10.canvas->canvasText("OCR MODE: looking...",12,252,0xF7B731,k10.canvas->eCNAndENFont16,60,true); }
-  else { snprintf(ln,sizeof(ln),"heard: %s", gHeard[0]?gHeard:"(Peper · A=OCR · B=stop)"); k10.canvas->canvasText(ln,12,252,0x7FA6C9,k10.canvas->eCNAndENFont16,60,true); }
+  else { snprintf(ln,sizeof(ln),"heard: %s", gHeard[0]?gHeard:"(say Peper · A/B=camera OCR)"); k10.canvas->canvasText(ln,12,252,0x7FA6C9,k10.canvas->eCNAndENFont16,60,true); }
   // Claude's reply (spoken via the speaker)
   snprintf(ln,sizeof(ln),"%s",gSay[0]?gSay:""); k10.canvas->canvasText(ln,12,276,0xEAF6FF,k10.canvas->eCNAndENFont16,60,true);
   k10.canvas->canvasText("Policy 986 AED",12,304,0x2A4A5A,k10.canvas->eCNAndENFont16,40,true);

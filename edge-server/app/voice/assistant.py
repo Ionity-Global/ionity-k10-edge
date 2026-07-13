@@ -97,10 +97,14 @@ class Assistant:
 
     def _speak(self, text: str) -> None:
         """Server-side TTS -> 16 kHz mono wav on disk. Piper if configured, else Windows SAPI.
-        The device fetches /api/say.wav and plays it through the ESP speaker."""
+        The device fetches /api/say.wav and plays it through the ESP speaker.
+        Spoken text is clipped short — she answers, she doesn't lecture (and [B] stops her)."""
         self.last_audio = None
         if not text:
             return
+        if len(text) > 260:
+            cut = text[:260]
+            text = cut[: cut.rfind(".") + 1] if "." in cut[80:] else cut + "…"
         out = str(Path(settings.data_dir) / "say.wav")
         p = None
         try:
@@ -125,14 +129,23 @@ class Assistant:
             self.last_user = text
             self.transcript.append({"role": "user", "text": text, "ts": time.time()})
             self.set_state("thinking")
-            # 1) smart-home intent (lights/media/scenes/MQTT) — act locally before the LLM
-            source = "home"
+            # 1) learning: "Peper, remember <fact>" -> stored in the profile, used in every prompt
+            source = "memory"
             reply = ""
-            if self.home is not None:
+            try:
+                from app.brain import persona as _p
+                ack = _p.maybe_remember(text)
+                if ack:
+                    reply = ack
+            except Exception:
+                pass
+            # 2) smart-home intent (lights/media/scenes/MQTT) — act locally before the LLM
+            if not reply and self.home is not None:
+                source = "home"
                 act = self.home.parse_and_act(text)
                 if act.get("handled"):
                     reply = act.get("spoken", "")
-            # 2) otherwise ask the brain (Claude bridge -> gemma4:e2b)
+            # 3) otherwise ask the brain (Claude bridge -> gemma4:e2b, Ionity persona attached)
             if not reply:
                 res = self.orc.ask(text)
                 reply = (res.get("text") or "").strip() or "…"

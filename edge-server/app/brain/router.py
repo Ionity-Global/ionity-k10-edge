@@ -33,8 +33,9 @@ class Router:
                 self.cache.store(query, br["text"], {"source": "bridge"})
                 return Route("bridge", br["text"], 0.95, {"brain": "claude"})
 
-        # 3) FALLBACK: local LLM (gemma4:e2b via Ollama)
-        local = self.local.ask(query) if self.local.available else {"text": "", "confidence": 0.0}
+        # 3) FALLBACK: local LLM (gemma4:e2b via Ollama) — with the Ionity persona as system prompt
+        sysp = (context or {}).get("system")
+        local = self.local.ask(query, system=sysp) if self.local.available else {"text": "", "confidence": 0.0}
         conf = float(local.get("confidence", 0.0))
         text = local.get("text", "")
         if text:

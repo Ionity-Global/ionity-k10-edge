@@ -13,6 +13,7 @@ from app.models.mood import Mood
 from app.models.llm_local import LocalLLM
 from app.bridge.claude_desktop import ClaudeBridge
 from app.brain.router import Router
+from app.brain import persona
 from app.meta import provenance
 
 
@@ -31,7 +32,9 @@ class Orchestrator:
 
     # ---- text query ----
     def ask(self, query: str, context: dict | None = None) -> dict:
-        route = self.router.answer(query, context)
+        ctx = dict(context or {})
+        ctx.setdefault("system", persona.system_prompt())   # Ionity-personalised, with learned facts
+        route = self.router.answer(query, ctx)
         mood = self.mood.infer_text(query)
         result = {
             "text": route.answer, "source": route.source,

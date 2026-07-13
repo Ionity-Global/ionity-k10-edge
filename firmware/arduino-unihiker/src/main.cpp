@@ -87,6 +87,7 @@ static void playSay() {
     i2s_set_sample_rates(I2S_NUM_0, 16000);      // same path the vendor playback uses
     int16_t mono[256], stereo[512]; size_t bw;
     while (http.connected()) {
+      if (k10.buttonB && k10.buttonB->isPressed()) break;   // [B] = STOP talking (interrupt)
       int r = st->readBytes((uint8_t*)mono, sizeof(mono)); if (r<=0) break;
       int n = r/2; for (int i=0;i<n;i++){ stereo[2*i]=mono[i]; stereo[2*i+1]=mono[i]; }
       i2s_write(I2S_NUM_0, stereo, n*4, &bw, portMAX_DELAY);
@@ -166,13 +167,13 @@ static void netAudioTask(void*) {
     }
     HTTPClient http; http.begin(urlOf("/api/voice-raw"));
     http.addHeader("Content-Type","audio/wav"); http.setTimeout(30000);
-    int code=http.POST(capBuf, 44+off); bool speak=false;
+    int code=http.POST(capBuf, 44+off);
     if (code==200){ JsonDocument d; if(!deserializeJson(d,http.getString())){
-      bool ig=d["ignored"]|false; const char* rp=d["reply"]|""; if(!ig&&strlen(rp)>0) speak=true;
       const char* tr=d["transcript"]|""; if(strlen(tr)>0){ strncpy(gHeard,tr,sizeof(gHeard)-1); gHeard[sizeof(gHeard)-1]=0; } } }
     http.end();
     gVoice = 0;
-    if (speak) playSay();
+    // NOTE: playback happens ONLY via the audio_seq check above — never here.
+    // (The old duplicate playSay() call made every reply play twice and fed the loop.)
     vTaskDelay(pdMS_TO_TICKS(20));
   }
 }
@@ -240,7 +241,7 @@ void loop() {
   k10.canvas->canvasRectangle(52,234,mw,10,0x00D2FF,0x00D2FF,true);
   // what the server HEARD (proves mic -> WiFi -> STT)
   if (gOCRPending) { k10.canvas->canvasText("OCR MODE: looking...",12,252,0xF7B731,k10.canvas->eCNAndENFont16,60,true); }
-  else { snprintf(ln,sizeof(ln),"heard: %s", gHeard[0]?gHeard:"(say Peper / [A]=OCR)"); k10.canvas->canvasText(ln,12,252,0x7FA6C9,k10.canvas->eCNAndENFont16,60,true); }
+  else { snprintf(ln,sizeof(ln),"heard: %s", gHeard[0]?gHeard:"(Peper · A=OCR · B=stop)"); k10.canvas->canvasText(ln,12,252,0x7FA6C9,k10.canvas->eCNAndENFont16,60,true); }
   // Claude's reply (spoken via the speaker)
   snprintf(ln,sizeof(ln),"%s",gSay[0]?gSay:""); k10.canvas->canvasText(ln,12,276,0xEAF6FF,k10.canvas->eCNAndENFont16,60,true);
   k10.canvas->canvasText("Policy 986 AED",12,304,0x2A4A5A,k10.canvas->eCNAndENFont16,40,true);

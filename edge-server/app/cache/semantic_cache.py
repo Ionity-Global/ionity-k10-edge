@@ -93,12 +93,14 @@ class SemanticCache:
             s = _cos(qe, it["emb"])
             if s > score:
                 best, score = it, s
-        if best and score >= self.threshold:
+        if best and score >= self.threshold and (best.get("a") or "").strip():
             best["hits"] = best.get("hits", 0) + 1
             return {"answer": best["a"], "score": score, "meta": best.get("meta"), "cached": True}
         return None
 
     def store(self, query: str, answer: str, meta: dict | None = None) -> None:
+        if not query or not answer or not answer.strip() or len(answer.strip()) < 2:
+            return                                            # never cache empty/blank replies
         self.items.append({
             "q": query, "a": answer,
             "emb": self.embedder.embed(query),

@@ -63,10 +63,12 @@ class Assistant:
         if self.telemetry is None:
             return None
         low = text.lower()
-        want_t = any(w in low for w in ("temperature", "temp", "hot", "warm", "cold", "degrees"))
+        # require a real question about the environment (avoid "warm hello" false positives)
+        is_q = any(w in low for w in ("what", "how", "is it", "'s the", "tell me", "?"))
+        want_t = any(w in low for w in ("temperature", "temp ", "degrees", "how hot", "how cold", "how warm"))
         want_h = "humid" in low
-        want_l = any(w in low for w in ("light", "bright", "dark"))
-        if not (want_t or want_h or want_l):
+        want_l = ("light level" in low) or ("how bright" in low) or ("how dark" in low)
+        if not (is_q and (want_t or want_h or want_l)):
             return None
         try:
             devs = list(self.telemetry.latest.keys())

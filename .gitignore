@@ -1,0 +1,85 @@
+# ---- Secrets (NEVER commit real WiFi / tokens to a public repo) ----
+**/secrets.h
+**/secrets.local.*
+**/.env
+**/.env.*
+!**/.env.example
+edge-server/app/config.local.py
+
+# ---- Firmware build ----
+firmware/**/.pio/
+firmware/**/.pioenvs/
+firmware/**/.piolibdeps/
+firmware/**/build/
+*.bin
+*.elf
+*.map
+
+# ---- Python / Edge Brain ----
+__pycache__/
+*.pyc
+.venv/
+venv/
+edge-server/models/*        # downloaded model weights (large)
+!edge-server/models/.gitkeep
+edge-server/data/
+edge-server/recordings/
+edge-server/cache/*.db
+
+# ---- Node / Installer ----
+installer/node_modules/
+installer/dist/
+installer/.vite/
+
+# ---- OS / editors ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# ---- Large source-asset bundles & media (kept in the Hub archive, never in the code repo) ----
+*.zip
+*.7z
+*.rar
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.mp3
+*.wav
+
+# ---- Anti-drift: root-anchored website/brand-archive dirs & loose media that the synced
+#      G: drive tends to deposit here. Leading '/' so docs/assets/ and app brand dirs survive. ----
+/-ASSETS-/
+/assets/
+/Audio/
+/cookies/
+/css/
+/js/
+/images/
+/videos/
+/favicon/
+/text/
+/.metadata/
+/ionity-assets-*/
+/Lisences,Policy,EULA/
+/*.pdf
+/*.png
+/*.jpg
+/*.jpeg
+/*.gif
+/*.ps1
+desktop.ini
+*.log
+
+# ---- Bundled firmware image is NOT committed: it embeds WiFi creds from secrets.h ----
+# Build locally; the installer flashes it from disk. For public distribution, build a
+# creds-free image (empty WIFI_PASS, provisioned via the installer over serial/NVS).
+installer/public/firmware/*.bin
+
+# ---- Built launcher binary: deliver on disk, don't commit to a public repo ----
+*.exe
+
+# CI workflow needs a workflow-scoped token to push; add it via GitHub web UI or a PAT with workflow scope.
+/.github/workflows/

@@ -1,0 +1,13 @@
+{
+  "name": "IonityEdge · K10",
+  "short_name": "IonityEdge",
+  "description": "Flash, provision and control your UNIHIKER K10 edge device. Policy 986 AED.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d1b2a",
+  "theme_color": "#00c6ff",
+  "icons": [
+    { "src": "/brand/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/brand/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

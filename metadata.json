@@ -1,0 +1,32 @@
+{
+  "project": "IonityEdge · K10",
+  "slug": "ionity-k10-edge",
+  "version": "0.1.0",
+  "status": "ACTIVE",
+  "author": {
+    "name": "Johan Wilhelm van Antwerp",
+    "role": "Founder · Ecosystems Architect · AI Solutions",
+    "id_intent": "GLOBAL"
+  },
+  "entity": "Ionity (Pty) Ltd / Antwerp Designs (AEDI)",
+  "governance": "Policy 986 AED",
+  "license": "CC BY-SA 4.0",
+  "visibility": "public",
+  "org": "Ionity-Global",
+  "websites": ["https://www.ionity.today", "https://www.ionity.co.za", "https://www.ionity.world"],
+  "contact": "info@ionity.today",
+  "location": { "city": "Centurion", "country": "South Africa", "tz": "UTC+2" },
+  "hardware_target": {
+    "board": "DFRobot UNIHIKER K10",
+    "mcu": "ESP32-S3 (Xtensa LX7)",
+    "sram_kb": 512,
+    "flash_mb": 16,
+    "display": "2.8in 320x240 IPS",
+    "camera_mp": 2,
+    "radio": "WiFi 2.4G + BT 5.0"
+  },
+  "architecture": "thin-client (K10) + hybrid Edge Brain (local models + Claude-desktop bridge) + React installer",
+  "created": "2026-07-12",
+  "tagline": "Building Tomorrow, Today.",
+  "watermark": "IONITY — PROPRIETARY BRAND · CODE CC BY-SA 4.0 · POL 986 AED"
+}

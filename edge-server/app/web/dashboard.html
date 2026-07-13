@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="icon" href="/web/favicon.ico" />
+<title>IonityEdge · K10 — Live Dashboard</title>
+<style>
+  :root{--bg:#0a1622;--cyan:#00d2ff;--muted:#7fa6c9;--line:rgba(0,210,255,.18);--card:rgba(22,33,62,.55)}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Segoe UI",system-ui,sans-serif;color:#eaf6ff;
+    background:radial-gradient(1000px 500px at 15% -10%,rgba(0,210,255,.10),transparent 60%),linear-gradient(160deg,#0a1622,#0d1b2a);min-height:100vh}
+  header{display:flex;align-items:center;gap:14px;padding:16px 26px;border-bottom:1px solid var(--line)}
+  header img{width:40px;height:40px;filter:drop-shadow(0 0 10px rgba(0,210,255,.5))}
+  header b{color:var(--cyan);font-size:20px;letter-spacing:.5px}
+  header .tag{color:var(--muted);font-size:12px}
+  .dot{width:10px;height:10px;border-radius:50%;background:#e94560}.dot.on{background:#26de81;box-shadow:0 0 10px #26de81}
+  main{display:grid;grid-template-columns:340px 1fr;gap:18px;padding:22px 26px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;backdrop-filter:blur(10px)}
+  h3{margin:0 0 12px;color:var(--cyan);font-size:12px;letter-spacing:1px;text-transform:uppercase}
+  .screen{width:240px;height:300px;margin:0 auto;border-radius:20px;background:#03080f;border:1px solid var(--line);position:relative;overflow:hidden}
+  .leds{display:flex;justify-content:center;gap:18px;margin-top:10px}.led{width:15px;height:15px;border-radius:50%;background:#0c1826;transition:.15s}
+  .row{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line);font-size:14px}.row:last-child{border:0}
+  label{font-size:12px;color:var(--muted);display:block;margin-top:8px}
+  input[type=range]{width:100%}input[type=color]{width:52px;height:30px;border:0;background:none}
+  button{background:linear-gradient(90deg,#00d2ff,#00c6ff);border:0;color:#04121e;font-weight:800;padding:10px 16px;border-radius:10px;cursor:pointer;margin-top:10px}
+  button.ghost{background:transparent;color:var(--cyan);border:1px solid var(--cyan)}
+  a{color:var(--cyan)}.muted{color:var(--muted);font-size:12px}
+  .pills span{font-size:11px;border:1px solid var(--line);border-radius:999px;padding:2px 8px;margin-right:6px;color:var(--muted)}.pills span.ok{color:#26de81;border-color:#26de81}
+  footer{color:var(--muted);font-size:11px;padding:14px 26px;border-top:1px solid var(--line);margin-top:10px}
+</style>
+</head>
+<body>
+<header>
+  <img src="/web/ionity-logo.svg" alt="Ionity" onerror="this.style.display='none'">
+  <div><b>IonityEdge · K10</b><div class="tag">Building Tomorrow, Today. · the node streams, the server computes</div></div>
+  <span style="margin-left:auto" class="muted"><span id="dot" class="dot"></span> <span id="conn">connecting…</span></span>
+</header>
+<main>
+  <div class="card">
+    <h3>Mini ESP Screen — live mirror</h3>
+    <div class="screen"><svg id="svg" width="240" height="262" viewBox="0 0 240 262"></svg></div>
+    <div class="leds"><div class="led" id="l0"></div><div class="led" id="l1"></div><div class="led" id="l2"></div></div>
+    <div style="margin-top:14px">
+      <div class="row"><span>Mood</span><b id="mood">—</b></div>
+      <div class="row"><span>Sound</span><b id="snd">—</b></div>
+      <div class="row"><span>Temp</span><b id="temp">—</b></div>
+      <div class="row"><span>Light</span><b id="light">—</b></div>
+      <div class="row"><span>Node</span><b id="ip">—</b></div>
+    </div>
+    <a id="devlink" href="#" target="_blank" style="display:none;margin-top:10px;display:inline-block">Open node page →</a>
+  </div>
+
+  <div class="card">
+    <h3>Orb Tuning — live (server recomputes, node + mirror update)</h3>
+    <div id="palette"></div><div id="sliders"></div>
+    <button onclick="save()">💾 Save</button>
+    <button class="ghost" onclick="reset_()">Reset defaults</button>
+    <span id="msg" class="muted" style="margin-left:10px"></span>
+    <p class="muted" style="margin-top:12px">Colour is computed by the Edge Brain from the node's sound: calm → <b style="color:#1E7BFF">blue</b> · active → <b style="color:#26DE81">green</b> · aggravated → <b style="color:#E23B4E">red &amp; darker</b>.</p>
+    <div class="pills" id="models" style="margin-top:8px"></div>
+  </div>
+  <div class="card" style="grid-column:1 / -1">
+    <h3>Claude · Chat &amp; Readback (TTS)</h3>
+    <div id="readback" style="min-height:44px;font-size:17px;line-height:1.4;border-left:3px solid var(--cyan);padding:10px 14px;margin-bottom:10px;background:rgba(0,210,255,.06);border-radius:8px">Say something to the orb…</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <input id="chatin" placeholder="Ask Claude / the brain…" style="flex:1;min-width:220px" onkeydown="if(event.key==='Enter')sendChat()">
+      <button onclick="sendChat()">Send</button>
+      <button class="ghost" id="ttsbtn" onclick="toggleTts()">🔊 TTS on</button>
+    </div>
+    <div id="chatlog" class="muted" style="margin-top:10px;max-height:150px;overflow:auto;font-size:12px"></div>
+    <p class="muted" style="margin-top:8px">Replies come from the Edge Brain (local Gemma via Ollama, or the Claude bridge). The reply is read aloud here and shown on the K10 screen's readback line.</p>
+  </div>
+</main>
+<footer>© 2018–2026 Ionity (Pty) Ltd · Johan Wilhelm van Antwerp · Policy 986 AED · CC BY-SA 4.0 · Anything is Possible with God.</footer>
+<script>
+const COLORS=[["calm","Calm (blue)"],["neutral","Neutral (cyan)"],["warn","Active (green)"],["agitated","Aggravated (red)"]];
+const NUM=[["base_r","Base radius",10,80,1],["pulse","Sound pulse",0,120,1],["darken","Darken @ aggravated",0,1,0.05],
+["attack","Agitation attack",0.01,0.5,0.01],["decay","Agitation decay",0.8,0.999,0.005],
+["calm_th","Calm threshold",0,1,0.02],["agit_th","Aggravated threshold",0,1,0.02],
+["bright_min","LED min",0,9,1],["bright_max","LED max",0,9,1],["fps_ms","Frame ms",15,120,1]];
+let cfg={}, st=null, lat=null, phase=0;
+const dark=(h,f)=>{h=h.replace('#','');let r=parseInt(h.slice(0,2),16)*f,g=parseInt(h.slice(2,4),16)*f,b=parseInt(h.slice(4,6),16)*f;
+  return '#'+[r,g,b].map(x=>Math.max(0,Math.min(255,x|0)).toString(16).padStart(2,'0')).join('')};
+async function loadCfg(){try{cfg=await (await fetch('/api/orb-config')).json();build()}catch(e){}}
+function build(){const p=document.getElementById('palette');if(!p.dataset.b){COLORS.forEach(([k,l])=>{const w=document.createElement('div');w.className='row';w.innerHTML='<span>'+l+'</span>';
+  const i=document.createElement('input');i.type='color';i.value='#'+cfg[k];i.oninput=e=>cfg[k]=e.target.value.replace('#','').toUpperCase();w.appendChild(i);p.appendChild(w)});p.dataset.b=1}
+  const s=document.getElementById('sliders');if(!s.dataset.b){NUM.forEach(([k,l,mn,mx,st2])=>{const lab=document.createElement('label');lab.id='L'+k;lab.textContent=l+': '+cfg[k];
+  const i=document.createElement('input');i.type='range';i.min=mn;i.max=mx;i.step=st2;i.value=cfg[k];i.oninput=e=>{cfg[k]=st2<1?parseFloat(e.target.value):parseInt(e.target.value);document.getElementById('L'+k).textContent=l+': '+cfg[k]};s.appendChild(lab);s.appendChild(i)});s.dataset.b=1}}
+async function save(){cfg=await (await fetch('/api/orb-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)})).json();msg('Saved ✓ — node updates in <1s')}
+async function reset_(){cfg=await (await fetch('/api/orb-config/reset',{method:'POST'})).json();document.getElementById('palette').dataset.b='';document.getElementById('sliders').dataset.b='';document.getElementById('palette').innerHTML='';document.getElementById('sliders').innerHTML='';build();msg('Reset')}
+function msg(t){document.getElementById('msg').textContent=t;setTimeout(()=>document.getElementById('msg').textContent='',4000)}
+async function poll(){try{const d=await (await fetch('/api/live')).json();const dev=d.devices&&(d.devices['ionity-k10']||Object.values(d.devices)[0]);
+  st=dev?dev.state:null;lat=dev?dev.latest:null;
+  const s=await (await fetch('/api/status')).json();const m=s.brain&&s.brain.models||{};
+  document.getElementById('models').innerHTML=Object.keys(m).map(k=>'<span class="'+(m[k]?'ok':'')+'">'+k+'</span>').join('')+'<span class="'+(s.brain&&s.brain.bridge&&s.brain.bridge.enabled?'ok':'')+'">claude:'+(s.brain?s.brain.bridge.mode:'?')+'</span>';
+  conn(true)}catch(e){conn(false)}}
+function conn(ok){document.getElementById('dot').className='dot'+(ok?' on':'');document.getElementById('conn').textContent=ok?'Edge Brain online':'offline'}
+function draw(){phase+=0.18;const br=0.5+0.5*Math.sin(phase);
+  const color=st&&st.color?'#'+st.color:'#1E7BFF';const lvl=st?st.level:0;const R=((st&&st.radius?st.radius:40)+br*7)*0.62;const cx=120,cy=120;
+  document.getElementById('svg').innerHTML=
+    '<text x="14" y="22" fill="#00d2ff" font-size="14">IONITY · ORB</text>'+
+    '<circle cx="'+cx+'" cy="'+cy+'" r="'+(R+16)+'" fill="none" stroke="'+dark(color,.22)+'" stroke-width="2"/>'+
+    '<circle cx="'+cx+'" cy="'+cy+'" r="'+R+'" fill="'+color+'"/>'+
+    '<circle cx="'+(cx-R/3)+'" cy="'+(cy-R/3)+'" r="'+Math.max(2,R/6)+'" fill="#fff" opacity=".9"/>'+
+    '<text x="14" y="224" fill="'+color+'" font-size="13">MOOD '+(st?st.label:'—')+'</text>';
+  const leds=(st&&st.leds)||['000000','000000','000000'];
+  for(let i=0;i<3;i++){const on=leds[i]&&leds[i]!=='000000';const e=document.getElementById('l'+i);e.style.background=on?'#'+leds[i]:'#0c1826';e.style.boxShadow=on?'0 0 10px #'+leds[i]:'none'}
+  document.getElementById('mood').textContent=st?st.label:'—';document.getElementById('mood').style.color=color;
+  document.getElementById('snd').textContent=st?Math.round(lvl*100)+'%':'—';
+  document.getElementById('temp').textContent=lat?(+lat.temp_c).toFixed(1)+' °C':'—';
+  document.getElementById('light').textContent=lat?lat.light:'—';
+  document.getElementById('ip').textContent=lat&&lat.ip?lat.ip:'—';
+  if(lat&&lat.ip){const a=document.getElementById('devlink');a.href='http://'+lat.ip+'/';a.style.display='inline-block'}
+  requestAnimationFrame(draw)}
+let ttsOn=true;
+function toggleTts(){ttsOn=!ttsOn;document.getElementById('ttsbtn').textContent=ttsOn?'🔊 TTS on':'🔇 TTS off'}
+function speak(t){if(ttsOn&&window.speechSynthesis&&t){const u=new SpeechSynthesisUtterance(t);u.rate=1;u.pitch=1;speechSynthesis.cancel();speechSynthesis.speak(u)}}
+function clog(s){const l=document.getElementById('chatlog');l.innerHTML+=s.replace(/</g,'&lt;')+'<br>';l.scrollTop=l.scrollHeight}
+async function sendChat(){const i=document.getElementById('chatin');const t=i.value.trim();if(!t)return;i.value='';clog('You: '+t);
+  document.getElementById('readback').textContent='… thinking';
+  try{const r=await (await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})})).json();
+    const rep=r.reply||'(no reply — enable Gemma via Ollama or the Claude bridge)';
+    document.getElementById('readback').textContent=rep;clog('Claude ['+(r.source||'?')+']: '+rep);speak(rep);
+  }catch(e){document.getElementById('readback').textContent='error: '+e.message}}
+loadCfg();poll();setInterval(poll,900);setInterval(loadCfg,6000);requestAnimationFrame(draw);
+</script>
+</body>
+</html>

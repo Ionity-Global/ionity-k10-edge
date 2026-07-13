@@ -1,0 +1,19 @@
+# IonityEdge · K10 — Edge Brain core deps (runs immediately)
+fastapi>=0.111
+uvicorn[standard]>=0.30
+pydantic>=2.7
+pydantic-settings>=2.3
+numpy>=1.26
+python-multipart>=0.0.9
+websockets>=12.0
+
+# ---- Optional model backends (install when you want real inference) ----
+# Uncomment / install via scripts/setup with EDGE_INSTALL_MODELS=1
+# faster-whisper>=1.0          # speech-to-text
+# piper-tts>=1.2               # text-to-speech
+# paddleocr>=2.7               # OCR (or: pytesseract + Pillow)
+# pytesseract>=0.3.10
+# Pillow>=10.3
+# opencv-python>=4.9           # vision / face
+# sentence-transformers>=3.0   # semantic-cache embeddings (else hashing fallback)
+# ollama>=0.3                  # local LLM client (run `ollama serve`)

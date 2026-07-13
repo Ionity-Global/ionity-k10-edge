@@ -122,6 +122,11 @@ static void syncWithServer() {
         JsonArray leds = s["leds"]; for (int i=0;i<3 && i<(int)leds.size();i++) gLeds[i]=hex2u32(leds[i]|"000000");
         strncpy(gSay, s["say"] | "", sizeof(gSay)-1); gSay[sizeof(gSay)-1]=0;
         gAudioSeq = (uint32_t)(s["audio_seq"] | (int)gAudioSeq);   // new TTS clip available?
+        // dashboard "OCR now": edge-triggered so one click = one capture
+        static int ocrPrev = 0;
+        int oreq = s["ocr_req"] | 0;
+        if (oreq && !ocrPrev && !gOCRPending) gDoOCR = true;
+        ocrPrev = oreq;
       }
     }
   }

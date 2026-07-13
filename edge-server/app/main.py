@@ -146,6 +146,7 @@ def ingest(body: dict = Body(...)):
         state["leds"] = [orbcfg._dark(c, 0.9), orbcfg._dark(c, 0.6), orbcfg._dark(c, 0.35)]
     state["ai_state"] = a["state"]
     state["audio_seq"] = a.get("audio_seq", 0)   # device plays say.wav when this bumps
+    state["ocr_req"] = 1 if (time.time() - _OCR_REQ["ts"] < 6) else 0   # dashboard OCR trigger
     if a.get("reply"):
         state["say"] = a["reply"][:96]           # Claude's words on the device
     elif _LAST_SAY["text"] and (time.time() - _LAST_SAY["ts"] < 25):
@@ -381,6 +382,10 @@ def logs():
 
 
 # ---------- Vision: camera image -> Gemma multimodal (OCR + description), OCR fallback ----------
+_LAST_VISION = {"text": "", "ts": 0.0, "backend": ""}
+_OCR_REQ = {"ts": 0.0}   # dashboard "OCR now" -> device grabs a camera frame on its next sync
+
+
 def _vision(img: bytes, prompt: str) -> dict:
     """Shared vision pipeline: Gemma multimodal via Ollama; classic OCR fallback.
     Speaks the answer (device plays it via audio_seq) and adds it to the transcript."""
@@ -401,6 +406,7 @@ def _vision(img: bytes, prompt: str) -> dict:
             assistant._speak(text[:300]); assistant.set_state("speaking")
             _LAST_SAY["text"] = text[:300]; _LAST_SAY["ts"] = time.time()
             logbuf.add("see", "gemma vision ok")
+            _LAST_VISION.update(text=text, ts=time.time(), backend="gemma-vision")
             return {"ok": True, "backend": "gemma-vision", "text": text,
                     "provenance": provenance.stamp("vision", {"len": len(img)})}
     except Exception as e:
@@ -412,7 +418,33 @@ def _vision(img: bytes, prompt: str) -> dict:
     if txt:
         assistant.last_reply = txt; assistant._speak(txt[:300]); assistant.set_state("speaking")
         assistant.transcript.append({"role": "assistant", "text": "[ocr] " + txt[:300], "ts": time.time()})
+    _LAST_VISION.update(text=txt or "(no text found)", ts=time.time(), backend="ocr")
     return {"ok": True, "backend": "ocr", "text": txt or "(no text found)", "detail": out}
+
+
+# ---------- OCR stream to the dashboard ----------
+@app.get("/api/cam.jpg")
+def cam_jpg():
+    p = Path(settings.data_dir) / "last_cam.jpg"
+    if p.exists():
+        return FileResponse(str(p), media_type="image/jpeg",
+                            headers={"Cache-Control": "no-store"})
+    return JSONResponse({"note": "no camera frame yet — press [A] on the K10 or click OCR now"}, status_code=404)
+
+
+@app.get("/api/vision")
+def vision_last():
+    p = Path(settings.data_dir) / "last_cam.jpg"
+    return {**_LAST_VISION, "has_frame": p.exists(),
+            "frame_ts": (p.stat().st_mtime if p.exists() else 0)}
+
+
+@app.post("/api/ocr-now")
+def ocr_now():
+    """Remote OCR trigger: the device sees ocr_req on its next /ingest sync and grabs a frame."""
+    _OCR_REQ["ts"] = time.time()
+    logbuf.add("see", "OCR requested from dashboard")
+    return {"ok": True, "note": "device will capture on its next sync (~2 s)"}
 
 
 @app.post("/api/see")

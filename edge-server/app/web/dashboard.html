@@ -98,7 +98,14 @@
       <div class="devwrap">
         <div class="bezel">
           <img id="mini" src="/api/screen.png" alt="ESP live"/>
-          <div class="cap">LIVE · UNIHIKER K10 mirror (server-rendered)</div>
+          <div class="cap">LIVE · K10 screen (server-rendered stream)</div>
+        </div>
+        <div class="bezel">
+          <img id="camimg" src="/api/cam.jpg" alt="camera" style="height:150px;object-fit:cover"
+               onerror="this.style.opacity=.15"/>
+          <div class="cap">OCR CAMERA · last frame</div>
+          <button class="send" id="ocrNow" style="width:100%;margin-top:6px;height:34px">OCR now 📷</button>
+          <div id="visText" style="max-width:200px;font-size:11px;color:var(--sub);margin-top:6px;max-height:110px;overflow-y:auto"></div>
         </div>
         <div class="stats">
           <div class="stat"><span>Device</span><b id="dIp">—</b></div>
@@ -108,6 +115,9 @@
           <div class="stat"><span>Voice level</span><b id="dLvl">—</b></div>
           <div class="stat"><span>AI state</span><b id="dState">—</b></div>
           <div class="stat"><span>Heard</span><b id="dHeard" style="font-size:11px">—</b></div>
+          <div class="stat"><span>Brain</span><b id="dBrain" style="font-size:11px">—</b></div>
+          <div class="stat"><span>Cache (learned)</span><b id="dCache" style="font-size:11px">—</b></div>
+          <div class="stat"><span>Wake word</span><b id="dWake">—</b></div>
         </div>
       </div>
     </div>
@@ -186,14 +196,31 @@ async function live(){try{
 }catch(e){}}
 setInterval(live,1500);live();
 
-/* mini ESP screen refresh */
-setInterval(()=>{const m=document.getElementById('mini'); if(document.getElementById('p-device').classList.contains('act')) m.src='/api/screen.png?t='+Date.now();},700);
+/* mini ESP screen + OCR camera streams (refresh while the Device tab is open) */
+let lastFrameTs=0;
+setInterval(async()=>{
+  if(!document.getElementById('p-device').classList.contains('act'))return;
+  document.getElementById('mini').src='/api/screen.png?t='+Date.now();
+  try{
+    const v=await(await fetch(BASE+'/api/vision')).json();
+    if(v.has_frame&&v.frame_ts!==lastFrameTs){lastFrameTs=v.frame_ts;
+      const c=document.getElementById('camimg');c.style.opacity=1;c.src='/api/cam.jpg?t='+Date.now();}
+    document.getElementById('visText').textContent=v.text?`[${v.backend}] ${v.text}`:'(no OCR yet — press A on the K10 or OCR now)';
+  }catch(e){}
+},800);
+document.getElementById('ocrNow').onclick=async()=>{
+  const b=document.getElementById('ocrNow');b.textContent='capturing…';
+  try{await fetch(BASE+'/api/ocr-now',{method:'POST'});}catch(e){}
+  setTimeout(()=>b.textContent='OCR now 📷',4000);};
 
 async function status(){try{
-  const s=await(await fetch(BASE+'/api/status')).json();const m=s.brain?.models||{},br=s.brain?.bridge||{};
+  const s=await(await fetch(BASE+'/api/status')).json();const m=s.brain?.models||{},br=s.brain?.bridge||{},c=s.brain?.cache||{};
   setPill('pStt',m.stt,m.stt?'stt ready':'stt off');
   setPill('pBridge',br.enabled,br.enabled?'claude bridge':'claude off');
   setPill('pBrain',m.local_llm,m.local_llm?'gemma ready':'brain: cache');
+  document.getElementById('dBrain').textContent=(br.enabled?'claude→':'')+'gemma4:e2b · vision gemma3:4b';
+  document.getElementById('dCache').textContent=(c.items??0)+' Q&A · '+(c.embedder||'');
+  try{const st=await(await fetch(BASE+'/api/settings')).json();document.getElementById('dWake').textContent=st.wake_word||'—';}catch(e){}
 }catch(e){}}
 setInterval(status,5000);status();
 function setPill(id,on,txt){const el=document.getElementById(id);el.textContent=txt;el.className='pill'+(on?' on':' warn');}
